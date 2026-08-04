@@ -54,6 +54,15 @@ public:
   // Create a file and set its length
   bool Create(std::string filename, u64 filesize);
 
+  // Open an existing file for both reading and writing, without creating it
+  // and without truncating it.  Used for in-place repair.  Refuses anything
+  // that is not a plain single-linked regular file, or whose size no longer
+  // matches the size recorded when the file was verified.
+  bool OpenForUpdate(void);
+
+  // Was the file opened by OpenForUpdate (so reads and writes are interleaved)
+  bool IsOpenForUpdate(void) const {return updatemode && IsOpen();}
+
   // Write some data to the file
   // maxlength should be the default value, except during testing.
   bool Write(u64 offset, const void *buffer, size_t length,
@@ -136,6 +145,10 @@ protected:
 
   // Does the file exist
   bool   exists;
+
+  // Was the file opened by OpenForUpdate.  On an update stream reads and
+  // writes are interleaved, which means Read and Write must always seek.
+  bool   updatemode;
 
 protected:
 #ifdef _WIN32

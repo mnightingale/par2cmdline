@@ -58,6 +58,7 @@ DiskFile::DiskFile(std::ostream &sout, std::ostream &serr)
   hFile = INVALID_HANDLE_VALUE;
 
   exists = false;
+  updatemode = false;
 }
 
 
@@ -273,6 +274,87 @@ bool DiskFile::Open(const std::string &_filename, u64 _filesize)
   return true;
 }
 
+// Open an existing file for both reading and writing (for in-place repair)
+
+bool DiskFile::OpenForUpdate(void)
+{
+  assert(hFile == INVALID_HANDLE_VALUE);
+
+  if (filename.empty())
+    return false;
+
+  std::wstring wfilename = utf8::Utf8ToWide(filename);
+
+  // Refuse reparse points, for parity with Create()'s O_NOFOLLOW on other platforms.
+  DWORD attributes = ::GetFileAttributesW(wfilename.c_str());
+  if (attributes == INVALID_FILE_ATTRIBUTES
+      || 0 != (attributes & FILE_ATTRIBUTE_REPARSE_POINT)
+      || 0 != (attributes & FILE_ATTRIBUTE_DIRECTORY))
+  {
+    #pragma omp critical
+    *serr << "Could not open \"" << filename << "\" for update: not a plain file." << std::endl;
+
+    return false;
+  }
+
+  // OPEN_EXISTING never creates the file.  The share mode matches Create().
+  hFile = ::CreateFileW(wfilename.c_str(), GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+  if (hFile == INVALID_HANDLE_VALUE)
+  {
+    DWORD error = ::GetLastError();
+
+    #pragma omp critical
+    *serr << "Could not open \"" << filename << "\" for update: " << ErrorMessage(error) << std::endl;
+
+    return false;
+  }
+
+  // Check what we actually opened.  Doing this on the handle rather than on the
+  // pathname means there is no window between the check and the first write.
+  BY_HANDLE_FILE_INFORMATION info;
+  if (!::GetFileInformationByHandle(hFile, &info))
+  {
+    DWORD error = ::GetLastError();
+
+    ::CloseHandle(hFile);
+    hFile = INVALID_HANDLE_VALUE;
+
+    #pragma omp critical
+    *serr << "Could not open \"" << filename << "\" for update: " << ErrorMessage(error) << std::endl;
+
+    return false;
+  }
+
+  if (info.nNumberOfLinks != 1)
+  {
+    ::CloseHandle(hFile);
+    hFile = INVALID_HANDLE_VALUE;
+
+    #pragma omp critical
+    *serr << "Could not open \"" << filename << "\" for update: it has more than one hard link." << std::endl;
+
+    return false;
+  }
+
+  u64 actualsize = ((u64)info.nFileSizeHigh << 32) | (u64)info.nFileSizeLow;
+  if (actualsize != filesize)
+  {
+    ::CloseHandle(hFile);
+    hFile = INVALID_HANDLE_VALUE;
+
+    #pragma omp critical
+    *serr << "Could not open \"" << filename << "\" for update: it changed size since it was verified." << std::endl;
+
+    return false;
+  }
+
+  offset = 0;
+  exists = true;
+  updatemode = true;
+
+  return true;
+}
+
 // Read some data from disk
 
 bool DiskFile::Read(u64 _offset, void *buffer, size_t length, LengthType maxlength)
@@ -341,6 +423,7 @@ void DiskFile::Close(void)
     ::CloseHandle(hFile);
     hFile = INVALID_HANDLE_VALUE;
   }
+  updatemode = false;
 }
 
 std::string DiskFile::GetCanonicalPathname(std::string filename)
@@ -463,6 +546,7 @@ DiskFile::DiskFile(std::ostream &sout, std::ostream &serr)
   file = 0;
 
   exists = false;
+  updatemode = false;
 }
 
 
@@ -583,7 +667,10 @@ bool DiskFile::Write(u64 _offset, const void *buffer, size_t length, LengthType 
 {
   assert(file != 0);
 
-  if (offset != _offset)
+  // On an update stream ("r+b") the C standard requires a file positioning call
+  // between a read and a following write, so always seek in that mode even when
+  // the write continues from where the last operation left off.
+  if (updatemode || offset != _offset)
   {
     if (_offset > (u64)MaxOffset)
     {
@@ -659,13 +746,109 @@ bool DiskFile::Open(const std::string &_filename, u64 _filesize)
   return true;
 }
 
+// Open an existing file for both reading and writing (for in-place repair)
+
+bool DiskFile::OpenForUpdate(void)
+{
+  assert(file == 0);
+
+  if (filename.empty())
+    return false;
+
+  if (filesize > (u64)MaxOffset)
+  {
+    #pragma omp critical
+    *serr << "File size for " << filename << " is too large." << std::endl;
+    return false;
+  }
+
+  // No O_CREAT, no O_EXCL and no O_TRUNC: a missing path or a dangling symlink
+  // must fail rather than bring a new file into existence.  O_NOFOLLOW matches
+  // Create() and keeps us from writing through a symbolic link.
+  int fd = open(filename.c_str(), O_RDWR | O_NOFOLLOW);
+  if (fd < 0)
+  {
+    #pragma omp critical
+    *serr << "Could not open " << filename << " for update: " << strerror(errno) << std::endl;
+
+    return false;
+  }
+
+  // Check what we actually opened.  Doing this on the descriptor rather than on
+  // the pathname means there is no window between the check and the first write.
+  struct stat st;
+  if (fstat(fd, &st) != 0)
+  {
+    int savederrno = errno;
+    close(fd);
+    errno = savederrno;
+
+    #pragma omp critical
+    *serr << "Could not open " << filename << " for update: " << strerror(errno) << std::endl;
+
+    return false;
+  }
+
+  if (!S_ISREG(st.st_mode))
+  {
+    close(fd);
+
+    #pragma omp critical
+    *serr << "Could not open " << filename << " for update: not a regular file." << std::endl;
+
+    return false;
+  }
+
+  if (st.st_nlink != 1)
+  {
+    close(fd);
+
+    #pragma omp critical
+    *serr << "Could not open " << filename << " for update: it has more than one hard link." << std::endl;
+
+    return false;
+  }
+
+  if ((u64)st.st_size != filesize)
+  {
+    close(fd);
+
+    #pragma omp critical
+    *serr << "Could not open " << filename << " for update: it changed size since it was verified." << std::endl;
+
+    return false;
+  }
+
+  file = fdopen(fd, "r+b");
+  if (file == 0)
+  {
+    int savederrno = errno;
+    close(fd);
+    errno = savederrno;
+
+    #pragma omp critical
+    *serr << "Could not open " << filename << " for update: " << strerror(errno) << std::endl;
+
+    return false;
+  }
+
+  offset = 0;
+  exists = true;
+  updatemode = true;
+
+  return true;
+}
+
 // Read some data from disk
 
 bool DiskFile::Read(u64 _offset, void *buffer, size_t length, LengthType maxlength)
 {
   assert(file != 0);
 
-  if (offset != _offset)
+  // On an update stream ("r+b") the C standard requires a file positioning call
+  // between a write and a following read, so always seek in that mode even when
+  // the read continues from where the last operation left off.
+  if (updatemode || offset != _offset)
   {
     if (_offset > (u64)MaxOffset)
     {
@@ -720,6 +903,7 @@ void DiskFile::Close(void)
     fclose(file);
     file = 0;
   }
+  updatemode = false;
 }
 
 // Attempt to get the full pathname of the file
