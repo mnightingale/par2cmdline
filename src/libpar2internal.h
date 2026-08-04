@@ -206,6 +206,8 @@ typedef unsigned int     size_t;
 
 #include "letype.h"
 
+#include "progressthrottle.h"
+
 #include "galois.h"
 #include "crc.h"
 #include "md5.h"

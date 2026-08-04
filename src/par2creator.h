@@ -158,6 +158,8 @@ protected:
   u64 progress;     // How much data has been processed.
   u64 totaldata;    // Total amount of data to be processed.
 
+  ProgressThrottle progressthrottle; // Limits how often the progress line is written.
+
   bool deferhashcomputation; // If we have enough memory to compute all recovery data
                              // in one pass, then we can defer the computation of
                              // the full file hash and block crc and hashes until

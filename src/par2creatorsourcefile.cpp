@@ -53,11 +53,16 @@ Par2CreatorSourceFile::~Par2CreatorSourceFile(void)
 // in a file description packet and a file verification packet.
 
 #ifdef _OPENMP
-bool Par2CreatorSourceFile::Open(NoiseLevel noiselevel, std::ostream &sout, std::ostream &serr, const std::string &extrafile, u64 blocksize, bool deferhashcomputation, std::string basepath, u64 totalsize, u64 &totalprogress)
+bool Par2CreatorSourceFile::Open(NoiseLevel noiselevel, std::ostream &sout, std::ostream &serr, const std::string &extrafile, u64 blocksize, bool deferhashcomputation, std::string basepath, u64 totalsize, u64 &totalprogress, ProgressThrottle &progressthrottle)
 #else
 bool Par2CreatorSourceFile::Open(NoiseLevel noiselevel, std::ostream &sout, std::ostream &serr, const std::string &extrafile, u64 blocksize, bool deferhashcomputation, std::string basepath)
 #endif
 {
+#ifndef _OPENMP
+  // Files are opened one at a time, so each one has its own throttle.
+  ProgressThrottle progressthrottle;
+#endif
+
   // Get the filename and filesize
   diskfilename = extrafile;
   filesize = DiskFile::GetFileSize(extrafile);
@@ -228,7 +233,10 @@ bool Par2CreatorSourceFile::Open(NoiseLevel noiselevel, std::ostream &sout, std:
         if (oldfraction != newfraction)
         {
           #pragma omp critical
-          sout << newfraction/10 << '.' << newfraction%10 << "%\r" << std::flush;
+          {
+            if (progressthrottle.Ready(newfraction == 1000))
+              sout << newfraction/10 << '.' << newfraction%10 << "%\r" << std::flush;
+          }
         }
       }
 

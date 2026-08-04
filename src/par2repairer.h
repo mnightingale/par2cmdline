@@ -209,6 +209,8 @@ protected:
 
   u64                       progress;                // How much data has been processed.
   u64                       totaldata;               // Total amount of data to be processed.
+
+  ProgressThrottle          progressthrottle;        // Limits how often the progress line is written.
 #ifdef _OPENMP
   u64                       mttotalsize;             // Total size of files for mt-progress line
   u64                       mttotalextrasize;        // Total size of extra files for mt-progress line

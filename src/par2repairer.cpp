@@ -58,6 +58,7 @@ Par2Repairer::Par2Repairer(std::ostream &sout, std::ostream &serr, const NoiseLe
 , copyblocks()
 , outputblocks()
 , rs()
+, progressthrottle()
 {
   skipdata = false;
   skipleaway = 0;
@@ -387,7 +388,7 @@ bool Par2Repairer::LoadPacketsFromFile(std::string filename)
         // Update a progress indicator
         u32 oldfraction = (u32)(1000 * progress / filesize);
         u32 newfraction = (u32)(1000 * offset / filesize);
-        if (oldfraction != newfraction)
+        if (oldfraction != newfraction && progressthrottle.Ready(newfraction == 1000))
         {
           sout << "Loading: " << newfraction/10 << '.' << newfraction%10 << "%\r" << std::flush;
           progress = offset;
@@ -1689,9 +1690,14 @@ bool Par2Repairer::ScanDataFile(DiskFile                *diskfile,    // [in]
         if (oldfraction != newfraction)
         {
           #pragma omp critical
-          sout << "Scanning: " << newfraction/10 << '.' << newfraction%10 << "%\r" << std::flush;
+          {
+            if (progressthrottle.Ready(newfraction == 1000))
+            {
+              sout << "Scanning: " << newfraction/10 << '.' << newfraction%10 << "%\r" << std::flush;
 
-          progressline = true;
+              progressline = true;
+            }
+          }
         }
       }
       oldoffset = filechecksummer.Offset();
@@ -1709,7 +1715,7 @@ bool Par2Repairer::ScanDataFile(DiskFile                *diskfile,    // [in]
         u32 newfraction = (u32)(1000 * filechecksummer.Offset() / diskfile->FileSize());
         printprogress = 0;
 
-        if (oldfraction != newfraction)
+        if (oldfraction != newfraction && progressthrottle.Ready(newfraction == 1000))
         {
           sout << "Scanning: \"" << shortname << "\": " << newfraction/10 << '.' << newfraction%10 << "%\r" << std::flush;
 
@@ -2571,7 +2577,10 @@ bool Par2Repairer::ProcessData(u64 blockoffset, size_t blocklength)
           if (oldfraction != newfraction)
           {
             #pragma omp critical
-            sout << "Repairing: " << newfraction/10 << '.' << newfraction%10 << "%\r" << std::flush;
+            {
+              if (progressthrottle.Ready(newfraction == 1000))
+                sout << "Repairing: " << newfraction/10 << '.' << newfraction%10 << "%\r" << std::flush;
+            }
           }
         }
       }
@@ -2624,7 +2633,7 @@ bool Par2Repairer::ProcessData(u64 blockoffset, size_t blocklength)
         progress += blocklength;
         u32 newfraction = (u32)(1000 * progress / totaldata);
 
-        if (oldfraction != newfraction)
+        if (oldfraction != newfraction && progressthrottle.Ready(newfraction == 1000))
         {
           sout << "Processing: " << newfraction/10 << '.' << newfraction%10 << "%\r" << std::flush;
         }

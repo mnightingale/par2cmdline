@@ -231,6 +231,9 @@ inline bool ReedSolomon<g>::Compute(NoiseLevel noiselevel, std::ostream &sout, s
   if (noiselevel > nlQuiet)
     sout << "Computing Reed Solomon matrix." << std::endl;
 
+  // Limits how often the progress line is written
+  ProgressThrottle progressthrottle;
+
   /*  Layout of RS Matrix:
       NOTE: The second set of columns represents the parity vectors present,
       but this only uses datamissing of them.  Otherwise, it is over constrained.
@@ -269,15 +272,6 @@ inline bool ReedSolomon<g>::Compute(NoiseLevel noiselevel, std::ostream &sout, s
   // One row for each present recovery block that will be used for a missing data block
   for (unsigned int row=0; row<datamissing; row++)
   {
-    // Define MPDL to skip reporting and speed things up
-#ifndef MPDL
-    if (noiselevel > nlQuiet)
-    {
-      int progress = row * 1000 / (datamissing+parmissing);
-      sout << "Constructing: " << progress/10 << '.' << progress%10 << "%\r" << std::flush;
-    }
-#endif
-
     // Get the exponent of the next present recovery block
     while (!outputrow->present)
     {
@@ -311,20 +305,23 @@ inline bool ReedSolomon<g>::Compute(NoiseLevel noiselevel, std::ostream &sout, s
     }
 
     outputrow++;
+
+    // Define MPDL to skip reporting and speed things up
+#ifndef MPDL
+    if (noiselevel > nlQuiet)
+    {
+      // Report the rows that have been completed, so that the second loop
+      // below picks up where this one left off and reaches 100%.
+      int progress = (row+1) * 1000 / (datamissing+parmissing);
+      if (progressthrottle.Ready(progress == 1000))
+        sout << "Constructing: " << progress/10 << '.' << progress%10 << "%\r" << std::flush;
+    }
+#endif
   }
   // One row for each recovery block being computed
   outputrow = outputrows.begin();
   for (unsigned int row=0; row<parmissing; row++)
   {
-    // Define MPDL to skip reporting and speed things up
-#ifndef MPDL
-    if (noiselevel > nlQuiet)
-    {
-      int progress = (row+datamissing) * 1000 / (datamissing+parmissing);
-      sout << "Constructing: " << progress/10 << '.' << progress%10 << "%\r" << std::flush;
-    }
-#endif
-
     // Get the exponent of the next missing recovery block
     while (outputrow->present)
     {
@@ -358,6 +355,16 @@ inline bool ReedSolomon<g>::Compute(NoiseLevel noiselevel, std::ostream &sout, s
     }
 
     outputrow++;
+
+    // Define MPDL to skip reporting and speed things up
+#ifndef MPDL
+    if (noiselevel > nlQuiet)
+    {
+      int progress = (row+datamissing+1) * 1000 / (datamissing+parmissing);
+      if (progressthrottle.Ready(progress == 1000))
+        sout << "Constructing: " << progress/10 << '.' << progress%10 << "%\r" << std::flush;
+    }
+#endif
   }
   if (noiselevel > nlQuiet)
     sout << "Constructing: done." << std::endl;
@@ -415,6 +422,9 @@ inline bool ReedSolomon<g>::GaussElim(NoiseLevel noiselevel, std::ostream &sout,
 
   int progress = 0;
 
+  // Limits how often the progress line is written
+  ProgressThrottle progressthrottle;
+
   // For each row in the matrix
   for (unsigned int row=0; row<datamissing; row++)
   {
@@ -453,19 +463,6 @@ inline bool ReedSolomon<g>::GaussElim(NoiseLevel noiselevel, std::ostream &sout,
     // For every other row in the matrix
     for (unsigned int row2=0; row2<rows; row2++)
     {
-      // Define MPDL to skip reporting and speed things up
-#ifndef MPDL
-      if (noiselevel > nlQuiet)
-      {
-        int newprogress = (row*rows+row2) * 1000 / (datamissing*rows);
-        if (progress != newprogress)
-        {
-          progress = newprogress;
-          sout << "Solving: " << progress/10 << '.' << progress%10 << "%\r" << std::flush;
-        }
-      }
-#endif
-
       if (row != row2)
       {
         // Get the scaling factor for this row.
@@ -510,6 +507,21 @@ inline bool ReedSolomon<g>::GaussElim(NoiseLevel noiselevel, std::ostream &sout,
           }
         }
       }
+
+      // Define MPDL to skip reporting and speed things up
+#ifndef MPDL
+      if (noiselevel > nlQuiet)
+      {
+        // Report the rows that have been completed, so that the last one
+        // to be solved reaches 100%.
+        int newprogress = (row*rows+row2+1) * 1000 / (datamissing*rows);
+        if (progress != newprogress && progressthrottle.Ready(newprogress == 1000))
+        {
+          progress = newprogress;
+          sout << "Solving: " << progress/10 << '.' << progress%10 << "%\r" << std::flush;
+        }
+      }
+#endif
     }
   }
   if (noiselevel > nlQuiet)

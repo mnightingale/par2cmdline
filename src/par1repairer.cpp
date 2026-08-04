@@ -56,6 +56,7 @@ Par1Repairer::Par1Repairer(std::ostream &sout, std::ostream &serr, const NoiseLe
 , rs()
 , progress(0)
 , totaldata(0)
+, progressthrottle()
 , inputbuffersize(0)
 , inputbuffer(0)
 , outputbufferalignment(0)
@@ -819,7 +820,7 @@ bool Par1Repairer::VerifyDataFile(DiskFile *diskfile, Par1RepairerSourceFile *so
             // Update a progress indicator
             u32 oldfraction = (u32)(1000 * (progress) / filesize);
             u32 newfraction = (u32)(1000 * (progress=offset) / filesize);
-            if (oldfraction != newfraction)
+            if (oldfraction != newfraction && progressthrottle.Ready(newfraction == 1000))
             {
               sout << "Scanning: \"" << name << "\": " << newfraction/10 << '.' << newfraction%10 << "%\r" << std::flush;
             }
@@ -1332,7 +1333,7 @@ bool Par1Repairer::ProcessData(u64 blockoffset, size_t blocklength)
           progress += blocklength;
           u32 newfraction = (u32)(1000 * progress / totaldata);
 
-          if (oldfraction != newfraction)
+          if (oldfraction != newfraction && progressthrottle.Ready(newfraction == 1000))
           {
             sout << "Repairing: " << newfraction/10 << '.' << newfraction%10 << "%\r" << std::flush;
           }

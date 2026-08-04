@@ -130,6 +130,8 @@ protected:
   u64                       progress;                // How much data has been processed.
   u64                       totaldata;               // Total amount of data to be processed.
 
+  ProgressThrottle          progressthrottle;        // Limits how often the progress line is written.
+
   size_t                    inputbuffersize;
   u8                       *inputbuffer;             // Buffer for reading DataBlocks (chunksize)
   size_t                    outputbufferalignment;

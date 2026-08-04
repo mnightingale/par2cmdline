@@ -65,6 +65,7 @@ Par2Creator::Par2Creator(std::ostream &sout, std::ostream &serr, const NoiseLeve
 , rs()
 , progress(0)
 , totaldata(0)
+, progressthrottle()
 
 , deferhashcomputation(false)
 #ifdef _OPENMP
@@ -382,7 +383,7 @@ bool Par2Creator::OpenSourceFiles(const std::vector<std::string> &extrafiles, st
 
     // Open the source file and compute its Hashes and CRCs.
 #ifdef _OPENMP
-    if (!sourcefile->Open(noiselevel, sout, serr, extrafiles[i], blocksize, deferhashcomputation, basepath, mttotalsize, totalprogress))
+    if (!sourcefile->Open(noiselevel, sout, serr, extrafiles[i], blocksize, deferhashcomputation, basepath, mttotalsize, totalprogress, progressthrottle))
 #else
     if (!sourcefile->Open(noiselevel, sout, serr, extrafiles[i], blocksize, deferhashcomputation, basepath))
 #endif
@@ -853,7 +854,10 @@ bool Par2Creator::ProcessData(u64 blockoffset, size_t blocklength)
         if (oldfraction != newfraction)
         {
           #pragma omp critical
-          sout << "Processing: " << newfraction/10 << '.' << newfraction%10 << "%\r" << std::flush;
+          {
+            if (progressthrottle.Ready(newfraction == 1000))
+              sout << "Processing: " << newfraction/10 << '.' << newfraction%10 << "%\r" << std::flush;
+          }
         }
       }
     }
