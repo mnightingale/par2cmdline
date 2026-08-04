@@ -735,6 +735,217 @@ int test6() {
 }
 
 
+// test OpenForUpdate
+int test7() {
+  const char *contents = "0123456789abcdefghijklmnopqrstuvwxyz";
+  const size_t length = strlen(contents);
+
+  remove("input1.txt");
+
+  {
+    DiskFile diskfile(std::cout, std::cerr);
+    if (!diskfile.Create("input1.txt", length)) {
+      std::cout << "Create failed" << std::endl;
+      return 1;
+    }
+    if (!diskfile.Write(0, contents, length)) {
+      std::cout << "Write failed" << std::endl;
+      return 1;
+    }
+    diskfile.Close();
+  }
+
+  // OpenForUpdate needs the filename and filesize members, which Open() sets.
+  // Repair reaches OpenForUpdate the same way: the file is verified first.
+  {
+    DiskFile diskfile(std::cout, std::cerr);
+    if (!diskfile.Open("input1.txt")) {
+      std::cout << "Open failed" << std::endl;
+      return 1;
+    }
+    diskfile.Close();
+
+    if (!diskfile.OpenForUpdate()) {
+      std::cout << "OpenForUpdate failed" << std::endl;
+      return 1;
+    }
+    if (!diskfile.IsOpenForUpdate()) {
+      std::cout << "IsOpenForUpdate said no after OpenForUpdate" << std::endl;
+      return 1;
+    }
+
+    u8 buffer[8];
+
+    // Read, then write at exactly the offset the read stopped at.  Without a
+    // seek between the two directions this is undefined behaviour on an update
+    // stream, and in practice the write lands in the wrong place.
+    if (!diskfile.Read(0, buffer, 4)) {
+      std::cout << "Read before write returned false" << std::endl;
+      return 1;
+    }
+    if (!diskfile.Write(4, "WXYZ", 4)) {
+      std::cout << "Write after read returned false" << std::endl;
+      return 1;
+    }
+
+    // And now a read at exactly the offset the write stopped at.
+    if (!diskfile.Read(8, buffer, 4)) {
+      std::cout << "Read after write returned false" << std::endl;
+      return 1;
+    }
+    if (0 != memcmp(buffer, contents + 8, 4)) {
+      std::cout << "Read after write returned the wrong data" << std::endl;
+      return 1;
+    }
+
+    // Re-read what we just wrote, going backwards over the write.
+    if (!diskfile.Read(4, buffer, 4)) {
+      std::cout << "Re-read of written data returned false" << std::endl;
+      return 1;
+    }
+    if (0 != memcmp(buffer, "WXYZ", 4)) {
+      std::cout << "Re-read did not see the written data" << std::endl;
+      return 1;
+    }
+
+    diskfile.Close();
+
+    if (diskfile.IsOpenForUpdate()) {
+      std::cout << "IsOpenForUpdate said yes after Close" << std::endl;
+      return 1;
+    }
+  }
+
+  // Check the file on disk: the write must have landed at offset 4 and the file
+  // must not have been truncated or extended.
+  {
+    if (DiskFile::GetFileSize("input1.txt") != length) {
+      std::cout << "OpenForUpdate changed the size of the file" << std::endl;
+      return 1;
+    }
+
+    std::string expected(contents);
+    expected.replace(4, 4, "WXYZ");
+
+    DiskFile diskfile(std::cout, std::cerr);
+    if (!diskfile.Open("input1.txt")) {
+      std::cout << "Re-open failed" << std::endl;
+      return 1;
+    }
+
+    u8 *buffer = new u8[length + 1];
+    buffer[length] = '\0';
+    if (!diskfile.Read(0, buffer, length)) {
+      std::cout << "Read of whole file returned false" << std::endl;
+      delete [] buffer;
+      return 1;
+    }
+    bool bad = (expected != (char *) buffer);
+    if (bad) {
+      std::cout << "file contents wrong after update" << std::endl;
+      std::cout << "read     \"" << buffer << "\"" << std::endl;
+      std::cout << "expected \"" << expected << "\"" << std::endl;
+    }
+    delete [] buffer;
+    diskfile.Close();
+    if (bad)
+      return 1;
+  }
+
+  // OpenForUpdate must not create a file that isn't there.
+  {
+    DiskFile diskfile(std::cout, std::cerr);
+    if (diskfile.Open("definitely_not_here")) {
+      std::cout << "Open of a missing file succeeded" << std::endl;
+      return 1;
+    }
+    if (diskfile.OpenForUpdate()) {
+      std::cout << "OpenForUpdate of a missing file succeeded" << std::endl;
+      return 1;
+    }
+    if (DiskFile::FileExists("definitely_not_here")) {
+      std::cout << "OpenForUpdate created a file" << std::endl;
+      remove("definitely_not_here");
+      return 1;
+    }
+  }
+
+#ifndef _WIN32
+  // A symbolic link must be refused, so that repair never writes through one.
+  {
+    remove("input1_link.txt");
+    if (0 != symlink("input1.txt", "input1_link.txt")) {
+      std::cout << "could not create a symlink for testing" << std::endl;
+      return 1;
+    }
+
+    DiskFile diskfile(std::cout, std::cerr);
+    if (!diskfile.Open("input1_link.txt")) {
+      std::cout << "Open of a symlink failed" << std::endl;
+      remove("input1_link.txt");
+      return 1;
+    }
+    diskfile.Close();
+
+    if (diskfile.OpenForUpdate()) {
+      std::cout << "OpenForUpdate of a symlink succeeded" << std::endl;
+      diskfile.Close();
+      remove("input1_link.txt");
+      return 1;
+    }
+    remove("input1_link.txt");
+  }
+
+  // So must a file with more than one hard link, since the other name would be
+  // silently modified too.
+  {
+    remove("input1_hardlink.txt");
+    if (0 != link("input1.txt", "input1_hardlink.txt")) {
+      std::cout << "could not create a hard link for testing" << std::endl;
+      return 1;
+    }
+
+    DiskFile diskfile(std::cout, std::cerr);
+    if (!diskfile.Open("input1.txt")) {
+      std::cout << "Open of a hard-linked file failed" << std::endl;
+      remove("input1_hardlink.txt");
+      return 1;
+    }
+    diskfile.Close();
+
+    if (diskfile.OpenForUpdate()) {
+      std::cout << "OpenForUpdate of a hard-linked file succeeded" << std::endl;
+      diskfile.Close();
+      remove("input1_hardlink.txt");
+      return 1;
+    }
+    remove("input1_hardlink.txt");
+  }
+#endif
+
+  // A file whose size no longer matches must be refused, because the block
+  // positions worked out during verification would no longer be valid.
+  {
+    DiskFile diskfile(std::cout, std::cerr);
+    if (!diskfile.Open("input1.txt", length + 1)) {
+      std::cout << "Open with the wrong size failed" << std::endl;
+      return 1;
+    }
+    diskfile.Close();
+
+    if (diskfile.OpenForUpdate()) {
+      std::cout << "OpenForUpdate with a stale size succeeded" << std::endl;
+      diskfile.Close();
+      return 1;
+    }
+  }
+
+  remove("input1.txt");
+
+  return 0;
+}
+
+
 int main() {
   if (test1()) {
     std::cerr << "FAILED: test1" << std::endl;
@@ -758,6 +969,10 @@ int main() {
   }
   if (test6()) {
     std::cerr << "FAILED: test6" << std::endl;
+    return 1;
+  }
+  if (test7()) {
+    std::cerr << "FAILED: test7" << std::endl;
     return 1;
   }
 
