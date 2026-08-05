@@ -108,6 +108,11 @@ The command line parameters for par2cmdline are as follow:
     -R       : Recurse into subdirectories (only useful on create)
     -N       : data skipping (find badly mispositioned data blocks)
     -S<n>    : Skip leaway (distance +/- from expected block position)
+    -i       : Repair damaged files in place (repair only): write only the
+               reconstructed blocks back into the existing file instead of
+               renaming it to <name>.1 and writing a whole new copy.  No
+               backup is kept.  Files that cannot be repaired safely this
+               way fall back to the normal behaviour.  Cannot be used with -N.
     -B<path> : Set the basepath to use as reference for the datafiles
     --       : Treat all following arguments as filenames
 

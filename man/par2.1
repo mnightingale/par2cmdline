@@ -79,6 +79,9 @@ data skipping (find badly mispositioned data blocks)
 .TP
 .B \-S<n>
 Skip leaway (distance +/\- from expected block position, default 64)
+.TP
+.B \-i
+.RB "Repair damaged files in place (repair only, cannot be used with " "\-N" ")"
 .SH OPTIONS create
 .TP
 .B \-b<n>
@@ -270,6 +273,33 @@ You can quickly fix them with:
 Par2 will scan only the first block of each file to determine if it's a perfect match. If it is, the file will be renamed back to its original name. If it's not a perfect match (e.g., the file is damaged), it will be skipped immediately without scanning the entire file.
 
 This is particularly useful when you have hundreds of gigabytes of renamed files protected by multiple PAR2 sets, as it avoids the slow block-by-block scanning that would otherwise be required.
+
+
+IN-PLACE REPAIR
+
+Normally par2 repairs a damaged data file by renaming it to "<name>.1", creating a new file with the original name, and copying every undamaged block from the old file into the new one. Repairing a single damaged block in a 50 GB file therefore writes 50 GB and needs 50 GB of free space.
+
+The "-i" option writes the reconstructed blocks straight back into the damaged file instead:
+
+  par2 r -i recovery.par2
+
+Only the blocks that are actually damaged are written, no "<name>.1" backup is created, and no extra free space is required. The file is modified rather than replaced, so its permissions and ownership are preserved. Note that this removes the cost of writing the file, not the cost of reading it: every undamaged block must still be read to reconstruct the damaged ones, and the repaired file is read once more to verify it.
+
+Because there is no backup, this option is not the default. What it does guarantee is that the undamaged parts of the file are never written to - only the damaged blocks are - so an interrupted repair leaves the file no worse off than it started, and the same command can simply be run again. Each run can only find more good blocks than the last. The one risk that cannot be removed is that a crash or power loss part way through a write may damage data adjacent to the block being written, which is inherent to writing in place at all.
+
+Files that cannot be repaired safely in place are repaired the normal way instead, and par2 says why. This happens when:
+.IP \(bu 4
+the file is not the length it should be, so the position of its blocks cannot be trusted;
+.IP \(bu 4
+some of its blocks were found somewhere other than their proper position, which happens with badly mispositioned data and also with files made up of long runs of repeated bytes;
+.IP \(bu 4
+it holds data that is needed to repair another file, or is itself an undamaged copy of another file;
+.IP \(bu 4
+it is missing entirely, is a symbolic link, has more than one hard link, or cannot be opened for writing.
+.PP
+The "-i" option cannot be combined with "-N". Data skipping does not scan the whole file, so it may not find every block that is really there, and in-place repair decides what is safe to overwrite from the blocks that were found. The two are also of little use together, since "-N" is for badly mispositioned data, which is exactly what makes a file ineligible for in-place repair.
+
+PAR1 files are always reconstructed in full, because PAR 1.0 uses one block per file. Repairing them in place would save no work, so "-i" is ignored for PAR1 with a warning.
 
 
 WHAT TO DO WHEN YOU ARE TOLD YOU NEED MORE RECOVERY BLOCKS
