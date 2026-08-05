@@ -57,6 +57,7 @@ CommandLine::CommandLine(void)
 , renameonly(false)
 , skipdata(false)
 , skipleaway(0)
+, inplace(false)
 , blockcount(0)
 , blocksize(0)
 , firstblock(0)
@@ -130,6 +131,11 @@ void CommandLine::usage(void)
     "             useful for quickly fixing renamed files)\n"
     "  -N       : Data skipping (find badly mispositioned data blocks)\n"
     "  -S<n>    : Skip leaway (distance +/- from expected block position, default 64)\n"
+    "  -i       : Repair damaged files in place (repair only): write only the\n"
+    "             reconstructed blocks back into the existing file instead of\n"
+    "             renaming it to <name>.1 and writing a whole new copy.  No\n"
+    "             backup is kept.  Files that cannot be repaired safely this\n"
+    "             way fall back to the normal behaviour.  Cannot be used with -N.\n"
     "Options: (create)\n"
     "  -b<n>    : Set the Block-Count (default 2000)\n"
     "  -s<n>    : Set the Block-Size (don't use both -b and -s)\n"
@@ -766,6 +772,17 @@ bool CommandLine::ReadArgs(int argc, const char * const *argv)
           }
           break;
 
+        case 'i':
+          {
+            if (operation != opRepair)
+            {
+              std::cerr << "Cannot specify in-place unless repairing." << std::endl;
+              return false;
+            }
+            inplace = true;
+          }
+          break;
+
         case 'h':
           {
             usage();
@@ -1149,6 +1166,18 @@ bool CommandLine::CheckValuesAndSetDefaults() {
       // Expect to find blocks within +/- 64 bytes of the expected
       // position relative to the last block that was found.
       skipleaway = 64;
+    }
+
+    // In-place repair overwrites the damaged file, so it needs to know about
+    // every block that was found.  Data skipping does not scan the whole file
+    // and so may miss data that in-place repair would overwrite.  Checked here
+    // rather than while parsing, because the two options may be given in
+    // either order.
+    if (inplace && skipdata)
+    {
+      std::cerr << "Cannot specify in-place repair and data skipping together." << std::endl;
+      std::cerr << "  (Data skipping may miss data that in-place repair would overwrite.)" << std::endl;
+      return false;
     }
   }
 

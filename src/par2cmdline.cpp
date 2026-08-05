@@ -103,6 +103,15 @@ int main(int argc, char* argv[])
           switch (commandline->GetVersion())
           {
             case CommandLine::verPar1:
+	      // PAR1 uses one block per file, so a damaged file is always
+	      // reconstructed in full.  Repairing it in place would save no
+	      // work and would only lose the backup copy.
+	      if (commandline->GetInPlace())
+	      {
+		std::cerr << "In-place repair is not supported for PAR1 files;"
+			  << " using the normal repair path." << std::endl;
+	      }
+
 	      result = par1repair(std::cout,
 				  std::cerr,
 				  commandline->GetNoiseLevel(),
@@ -132,7 +141,8 @@ int main(int argc, char* argv[])
 				  commandline->GetPurgeFiles(),
 				  commandline->GetRenameOnly(),
 				  commandline->GetSkipData(),
-				  commandline->GetSkipLeaway());
+				  commandline->GetSkipLeaway(),
+				  commandline->GetInPlace());
               break;
 	    default:
               break;

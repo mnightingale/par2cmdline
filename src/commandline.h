@@ -98,6 +98,7 @@ public:
   bool                                GetRecursive(void) const   {return recursive;}
   bool                                GetSkipData(void) const    {return skipdata;}
   u64                                 GetSkipLeaway(void) const  {return skipleaway;}
+  bool                                GetInPlace(void) const     {return inplace;}
 #ifdef _OPENMP
   u32                                 GetNumThreads(void) {return nthreads;}
   u32                                 GetFileThreads(void) {return filethreads;}
@@ -181,6 +182,9 @@ protected:
                                // skip data that is too far away.
   u64 skipleaway;              // The maximum leaway +/- that we will
                                // allow when searching for blocks.
+  bool inplace;                // Write the reconstructed blocks back into
+                               // the damaged file instead of renaming it
+                               // and writing out a whole new copy.
 
 
   // options for creating par files
