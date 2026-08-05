@@ -538,6 +538,19 @@ int test9() {
   if (test9_helper("par2 create -nad foo.par2 input1.txt input2.txt"))
     return 1;
 
+  // in-place repair is only meaningful when repairing, and cannot be combined
+  // with data skipping (which may not find every block that is really there).
+  if (test9_helper("par2 create -i foo.par2 input1.txt input2.txt"))
+    return 1;
+  if (test9_helper("par2 verify -i foo.par2 input1.txt input2.txt"))
+    return 1;
+  if (test9_helper("par2 repair -i -N foo.par2 input1.txt input2.txt"))
+    return 1;
+  if (test9_helper("par2 repair -N -i foo.par2 input1.txt input2.txt"))
+    return 1;
+  if (test9_helper("par2 repair -i -N -S42 foo.par2 input1.txt input2.txt"))
+    return 1;
+
 
   // delete files that were created at start of test.
   remove("foo.par2");
@@ -1173,7 +1186,8 @@ int test11_helper(const char *arg,
 		  const CommandLine::Operation operation,
 		  const bool purgefiles,
 		  const bool skipdata,
-		  const u64 skipleaway
+		  const u64 skipleaway,
+		  const bool inplace = false
 		  )
 {
   // copy args into argc/argv format
@@ -1273,6 +1287,11 @@ int test11_helper(const char *arg,
     if (commandline.GetSkipLeaway() != skipleaway) {
       std::cout << "test11 fail skipleaway  arg=" << arg << std::endl;
       std::cout << commandline.GetSkipLeaway() << " != " << skipleaway << std::endl;
+      return 1;
+    }
+    if (commandline.GetInPlace() != inplace) {
+      std::cout << "test11 fail inplace  arg=" << arg << std::endl;
+      std::cout << commandline.GetInPlace() << " != " << inplace << std::endl;
       return 1;
     }
   }
@@ -1639,6 +1658,25 @@ int test11() {
 		    default_purgefiles,
 		    true,
 		    42)) {
+    return 1;
+  }
+  // -i
+  if (test11_helper("par2 repair -i foo.par2 input1.txt input2.txt",
+		    default_noiselevel,
+		    default_memorylimit,
+		    default_basepath,
+#ifdef _OPENMP
+		    default_nthreads,
+		    default_filethreads,
+#endif
+		    default_parfilename,
+		    default_extrafiles,
+		    CommandLine::verPar2,
+		    CommandLine::opRepair,
+		    default_purgefiles,
+		    default_skipdata,
+		    default_skipleaway,
+		    true)) {
     return 1;
   }
 
