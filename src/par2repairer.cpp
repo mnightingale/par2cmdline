@@ -48,6 +48,7 @@ Par2Repairer::Par2Repairer(std::ostream &sout, std::ostream &serr, const NoiseLe
 , sourcefiles()
 , verifylist()
 , backuplist()
+, inplacefiles()
 , par2list()
 , sourceblocks()
 , targetblocks()
@@ -61,6 +62,7 @@ Par2Repairer::Par2Repairer(std::ostream &sout, std::ostream &serr, const NoiseLe
 {
   skipdata = false;
   skipleaway = 0;
+  inplace = false;
 
   firstpacket = true;
   mainpacket = 0;
@@ -135,7 +137,8 @@ Result Par2Repairer::Process(
 			     const bool purgefiles,
 			     const bool renameonly,
 			     const bool _skipdata,
-			     const u64 _skipleaway
+			     const u64 _skipleaway,
+			     const bool _inplace
 			     )
 {
 #ifdef _OPENMP
@@ -147,6 +150,9 @@ Result Par2Repairer::Process(
 
   // How much leaway should we allow when scanning files
   skipleaway = _skipleaway;
+
+  // Should we repair damaged files in place
+  inplace = _inplace;
 
   // Get filenames from the command line
   basepath = _basepath;
@@ -232,6 +238,11 @@ Result Par2Repairer::Process(
     {
       if (noiselevel > nlSilent)
         sout << std::endl;
+
+      // Work out which damaged files can be repaired in place, so that they
+      // are not renamed out of the way and written out again as a fresh copy.
+      if (inplace)
+        OpenInPlaceTargetFiles();
 
       // Rename any damaged or missnamed target files.
       if (!RenameTargetFiles())
@@ -2223,6 +2234,196 @@ bool Par2Repairer::CheckVerificationResults(void)
   return true;
 }
 
+// Work out which damaged target files can safely be repaired in place, open
+// them for update and allocate target DataBlocks for the parts of them that
+// need to be rewritten.
+//
+// Repairing in place means writing the reconstructed blocks straight back into
+// the damaged file instead of renaming it to <name>.1 and copying every
+// undamaged block into a brand new file.  That is only safe when nothing else
+// needs to read the bytes we are about to overwrite, so a file is only
+// considered when every block that was found inside it is one of its own
+// blocks sitting at its own natural position.  The blocks we then write are
+// exactly the ones that are not in that set, so what we read and what we write
+// never overlap - which is also why an interrupted in-place repair leaves the
+// undamaged parts of the file untouched and can simply be run again.
+//
+// Any file we do not take on is left for RenameTargetFiles and
+// CreateTargetFiles to handle in the usual way.
+void Par2Repairer::OpenInPlaceTargetFiles(void)
+{
+  // Which DiskFiles hold data that repair will need to read, other than a
+  // file's own blocks sitting at their own natural positions?  Writing into any
+  // of these could destroy the only copy of that data.
+  std::set<DiskFile*> mustpreserve;
+
+  // Which DiskFiles are a complete version of some source file?  Those get
+  // renamed onto their proper name by RenameTargetFiles, so we must not be
+  // holding one of them open for update.
+  std::set<DiskFile*> completefiles;
+
+  for (std::map<u32,RecoveryPacket*>::iterator rp = recoverypacketmap.begin(); rp != recoverypacketmap.end(); ++rp)
+  {
+    DataBlock *recoveryblock = rp->second->GetDataBlock();
+    if (recoveryblock->IsSet())
+      mustpreserve.insert(recoveryblock->GetDiskFile());
+  }
+
+  u32 filenumber = 0;
+  std::vector<Par2RepairerSourceFile*>::iterator sf = sourcefiles.begin();
+
+  while (sf != sourcefiles.end())
+  {
+    Par2RepairerSourceFile *sourcefile = *sf;
+
+    if (sourcefile != 0)
+    {
+      if (sourcefile->GetCompleteFile() != 0)
+        completefiles.insert(sourcefile->GetCompleteFile());
+
+      // Only the recoverable files have DataBlocks allocated to them.
+      if (blocksallocated && filenumber < mainpacket->RecoverableFileCount())
+      {
+        std::vector<DataBlock>::iterator sb = sourcefile->SourceBlocks();
+
+        for (u32 blocknumber=0; blocknumber<sourcefile->BlockCount(); ++blocknumber, ++sb)
+        {
+          if (sb->IsSet()
+              && (sb->GetDiskFile() != sourcefile->GetTargetFile()
+                  || sb->GetOffset() != (u64)blocknumber * blocksize))
+          {
+            mustpreserve.insert(sb->GetDiskFile());
+          }
+        }
+      }
+    }
+
+    ++sf;
+    ++filenumber;
+  }
+
+  filenumber = 0;
+  sf = sourcefiles.begin();
+
+  while (sf != sourcefiles.end())
+  {
+    Par2RepairerSourceFile *sourcefile = *sf;
+
+    // Only consider the damaged files that RenameTargetFiles would back up,
+    // and only those that actually have DataBlocks allocated to them.
+    if (sourcefile != 0
+        && blocksallocated
+        && filenumber < mainpacket->RecoverableFileCount()
+        && sourcefile->GetTargetExists()
+        && sourcefile->GetTargetFile() != sourcefile->GetCompleteFile())
+    {
+      DiskFile *targetfile = sourcefile->GetTargetFile();
+      u64 filesize = sourcefile->GetDescriptionPacket()->FileSize();
+
+      // How many of the file's blocks are not already correct on disk?
+      u32 blockstowrite = 0;
+      std::vector<DataBlock>::iterator sb = sourcefile->SourceBlocks();
+
+      for (u32 blocknumber=0; blocknumber<sourcefile->BlockCount(); ++blocknumber, ++sb)
+      {
+        if (!(sb->IsSet()
+              && sb->GetDiskFile() == targetfile
+              && sb->GetOffset() == (u64)blocknumber * blocksize))
+        {
+          blockstowrite++;
+        }
+      }
+
+      const char *reason = 0;
+
+      if (targetfile->FileSize() != filesize)
+      {
+        // The block positions in a file of the wrong length cannot be trusted,
+        // and we have no way to grow or shrink it back to the right size.
+        reason = "its size differs from the original";
+      }
+      else if (sourcefile->GetCompleteFile() != 0)
+      {
+        // RenameTargetFiles will put the undamaged copy in place instead, which
+        // is cheaper than rewriting this one.
+        reason = "an undamaged copy of it exists under another name";
+      }
+      else if (completefiles.count(targetfile) != 0)
+      {
+        // RenameTargetFiles is about to move this file to another name.
+        reason = "it is an undamaged copy of another file";
+      }
+      else if (mustpreserve.count(targetfile) != 0)
+      {
+        reason = "it holds data that is needed to repair a file";
+      }
+      else if (blockstowrite == 0)
+      {
+        reason = "none of its data needs to be rewritten";
+      }
+      else if (!targetfile->OpenForUpdate())
+      {
+        reason = "it could not be opened for writing";
+      }
+
+      std::string name;
+      if (noiselevel > nlSilent)
+      {
+        std::string path;
+        DiskFile::SplitFilename(targetfile->FileName(), path, name);
+      }
+
+      if (reason != 0)
+      {
+        if (noiselevel > nlSilent)
+        {
+          sout << "Cannot repair \"" << name << "\" in place because "
+               << reason << ".  A new copy will be written." << std::endl;
+        }
+      }
+      else
+      {
+        // Allocate target DataBlocks for the blocks that need rewriting, and
+        // only for those.  Leaving the rest unset is what stops ProcessData
+        // from copying data that is already in the right place, and what keeps
+        // every write clear of the data we still have to read.
+        u64 offset = 0;
+        sb = sourcefile->SourceBlocks();
+        std::vector<DataBlock>::iterator tb = sourcefile->TargetBlocks();
+
+        for (u32 blocknumber=0; blocknumber<sourcefile->BlockCount(); ++blocknumber, ++sb, ++tb)
+        {
+          if (!(sb->IsSet()
+                && sb->GetDiskFile() == targetfile
+                && sb->GetOffset() == offset))
+          {
+            tb->SetLocation(targetfile, offset);
+            tb->SetLength(std::min(blocksize, filesize-offset));
+          }
+
+          offset += blocksize;
+        }
+
+        inplacefiles.insert(targetfile);
+
+        // Add the file to the list of those that will need to be verified
+        // once the repair has completed.
+        verifylist.push_back(sourcefile);
+
+        if (noiselevel > nlSilent)
+        {
+          sout << "Repairing \"" << name << "\" in place ("
+               << blockstowrite << " of " << sourcefile->BlockCount()
+               << " blocks will be rewritten)." << std::endl;
+        }
+      }
+    }
+
+    ++sf;
+    ++filenumber;
+  }
+}
+
 // Rename any damaged or missnamed target files.
 bool Par2Repairer::RenameTargetFiles(void)
 {
@@ -2234,9 +2435,11 @@ bool Par2Repairer::RenameTargetFiles(void)
   {
     Par2RepairerSourceFile *sourcefile = *sf;
 
-    // If the target file exists but is not a complete version of the file
+    // If the target file exists but is not a complete version of the file, and
+    // we are not about to repair it in place
     if (sourcefile->GetTargetExists() &&
-        sourcefile->GetTargetFile() != sourcefile->GetCompleteFile())
+        sourcefile->GetTargetFile() != sourcefile->GetCompleteFile() &&
+        0 == inplacefiles.count(sourcefile->GetTargetFile()))
     {
       DiskFile *targetfile = sourcefile->GetTargetFile();
 
@@ -2505,6 +2708,11 @@ bool Par2Repairer::ProcessData(u64 blockoffset, size_t blocklength)
 
   DiskFile *lastopenfile = NULL;
 
+  // A file being repaired in place is both an input and the output, and was
+  // already opened for update before we got here.  Only close the files that
+  // we opened ourselves, or we would drop the handle the writes need.
+  bool lastopenedbyus = false;
+
   // Are there any blocks which need to be reconstructed
   if (missingblockcount > 0)
   {
@@ -2515,14 +2723,15 @@ bool Par2Repairer::ProcessData(u64 blockoffset, size_t blocklength)
       if (lastopenfile != (*inputblock)->GetDiskFile())
       {
         // Close the last file
-        if (lastopenfile != NULL)
+        if (lastopenfile != NULL && lastopenedbyus)
         {
           lastopenfile->Close();
         }
 
         // Open the new file
         lastopenfile = (*inputblock)->GetDiskFile();
-        if (!lastopenfile->Open())
+        lastopenedbyus = !lastopenfile->IsOpen();
+        if (lastopenedbyus && !lastopenfile->Open())
         {
           return false;
         }
@@ -2582,7 +2791,9 @@ bool Par2Repairer::ProcessData(u64 blockoffset, size_t blocklength)
   }
   else
   {
-    // Reconstruction is not required, we are just copying blocks between files
+    // Reconstruction is not required, we are just copying blocks between files.
+    // Note that a file being repaired in place is never read here, because a
+    // block that is already in the right place has no target block set.
 
     // For each block that might need to be copied
     while (copyblock != copyblocks.end())
@@ -2594,14 +2805,15 @@ bool Par2Repairer::ProcessData(u64 blockoffset, size_t blocklength)
         if (lastopenfile != (*inputblock)->GetDiskFile())
         {
           // Close the last file
-          if (lastopenfile != NULL)
+          if (lastopenfile != NULL && lastopenedbyus)
           {
             lastopenfile->Close();
           }
 
           // Open the new file
           lastopenfile = (*inputblock)->GetDiskFile();
-          if (!lastopenfile->Open())
+          lastopenedbyus = !lastopenfile->IsOpen();
+          if (lastopenedbyus && !lastopenfile->Open())
           {
             return false;
           }
@@ -2636,7 +2848,7 @@ bool Par2Repairer::ProcessData(u64 blockoffset, size_t blocklength)
   }
 
   // Close the last file
-  if (lastopenfile != NULL)
+  if (lastopenfile != NULL && lastopenedbyus)
   {
     lastopenfile->Close();
   }
@@ -2740,6 +2952,29 @@ bool Par2Repairer::DeleteIncompleteTargetFiles(void)
     if (sourcefile->GetTargetExists())
     {
       DiskFile *targetfile = sourcefile->GetTargetFile();
+
+      // A file repaired in place is not a fresh copy that can be thrown away -
+      // it is the only copy there is, and there is no backup to fall back on.
+      // Keep whatever is on disk.  Its undamaged blocks were never written to,
+      // so running the same repair again is safe once the problem is fixed.
+      if (0 != inplacefiles.count(targetfile))
+      {
+        // Close the file so that anything already written reaches the disk
+        if (targetfile->IsOpen())
+          targetfile->Close();
+
+        std::string name;
+        std::string path;
+        DiskFile::SplitFilename(targetfile->FileName(), path, name);
+
+        serr << "Not deleting \"" << name << "\": it was being repaired in place"
+             << " and may now be incomplete.  Its undamaged data was not"
+             << " overwritten, so the same repair can safely be run again."
+             << std::endl;
+
+        ++sf;
+        continue;
+      }
 
       // Close and delete the file
       if (targetfile->IsOpen())

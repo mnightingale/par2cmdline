@@ -40,7 +40,8 @@ public:
 		 const bool purgefiles,
 		 const bool renameonly,
 		 const bool skipdata,
-		 const u64 skipleaway
+		 const u64 skipleaway,
+		 const bool inplace
 		 );
 
 protected:
@@ -113,6 +114,11 @@ protected:
   // Check the verification results and report the results
   bool CheckVerificationResults(void);
 
+  // Work out which damaged target files can safely be repaired in place,
+  // open them for update and allocate target DataBlocks for the parts of
+  // them that need to be rewritten.
+  void OpenInPlaceTargetFiles(void);
+
   // Rename any damaged or missnamed target files.
   bool RenameTargetFiles(void);
 
@@ -161,6 +167,7 @@ protected:
 
   bool                      skipdata;                // Should we skip data whilst scanning
   u64                       skipleaway;              // The leaway +/- we should allow whilst scanning
+  bool                      inplace;                 // Should we repair damaged files in place
 
   bool                      firstpacket;             // Whether or not a valid packet has been found.
   MD5Hash                   setid;                   // The SetId extracted from the first packet.
@@ -175,6 +182,7 @@ protected:
   std::vector<Par2RepairerSourceFile*>      sourcefiles;  // The source files
   std::vector<Par2RepairerSourceFile*>      verifylist;   // Those source files that are being repaired
   std::vector<DiskFile*>                    backuplist;   // Those source files backups
+  std::set<DiskFile*>                       inplacefiles; // Those target files being repaired in place
   std::list<std::string>                    par2list;     // list of par2 files
 
   u64                       blocksize;               // The block size.
