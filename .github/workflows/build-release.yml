@@ -4,6 +4,7 @@ on:
   push:
     branches:
     - 'turbo'
+    - 'turbo-macos-simd'
 
 jobs:
   build-check-linux:
