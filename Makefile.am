@@ -231,6 +231,24 @@ libparpar_gf16_metal_a_SOURCES = \
 	parpar/gf16/gpu_device_metal.h
 libparpar_gf16_metal_a_OBJCXXFLAGS = -std=c++14 -fobjc-arc
 libparpar_gf16_metal_a_CPPFLAGS = -Iparpar/gf16 $(AM_CPPFLAGS)
+
+# The GF16 shader is compiled to a .metallib and embedded as a byte array, so
+# the built binary carries its own kernel and needs no companion file at
+# runtime. Generated rather than checked in: keeping a binary blob in the tree
+# would make the shader source and the shipped kernel able to drift apart.
+BUILT_SOURCES = parpar/gf16/gf16_metal_lib.h
+CLEANFILES = parpar/gf16/gf16_metal_lib.h \
+	parpar/gf16/gf16_metal.air \
+	parpar/gf16/gf16_metal.metallib
+
+parpar/gf16/gf16_metal_lib.h: parpar/gf16/gf16_metal.metal
+	$(AM_V_GEN)xcrun -sdk macosx metal -O3 -c $< -o parpar/gf16/gf16_metal.air && \
+	xcrun -sdk macosx metallib parpar/gf16/gf16_metal.air -o parpar/gf16/gf16_metal.metallib && \
+	{ echo '// Generated from gf16_metal.metal by the build; do not edit.'; \
+	  echo 'static const unsigned char gf16_metal_lib[] = {'; \
+	  od -An -tx1 -v parpar/gf16/gf16_metal.metallib \
+	    | sed -e 's/[0-9a-f][0-9a-f]/0x&,/g'; \
+	  echo '};'; } > $@
 endif
 
 libparpar_hasher_a_SOURCES = \

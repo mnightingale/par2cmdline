@@ -2,6 +2,11 @@
 # run git clean -fdx
 # thx @spider-mario
 
+# generated Metal shader library (built from gf16_metal.metal)
+parpar/gf16/gf16_metal_lib.h
+parpar/gf16/gf16_metal.air
+parpar/gf16/gf16_metal.metallib
+
 # compilation output
 par2
 libpar2.a

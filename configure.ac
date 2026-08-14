@@ -200,6 +200,19 @@ AS_IF([test "x$enable_metal" != xno], [
 		LIBS="$save_LIBS"
 		AC_MSG_RESULT([$have_metal])
 		AS_IF([test "x$OBJCXX" = x], [have_metal=no])
+
+		dnl The kernel is compiled to a .metallib at build time and embedded,
+		dnl so the shader compiler is required rather than optional. It ships
+		dnl with Xcode but is a separately downloaded component.
+		AS_IF([test "x$have_metal" = xyes], [
+			AC_MSG_CHECKING([for Metal shader compiler])
+			AS_IF([xcrun -sdk macosx metal --version >/dev/null 2>&1],
+				[AC_MSG_RESULT([yes])],
+				[AC_MSG_RESULT([no])
+				 have_metal=no
+				 AC_MSG_WARN([Metal shader compiler not found; disabling the Metal backend.])
+				 AC_MSG_WARN([Install it with: xcodebuild -downloadComponent MetalToolchain])])
+		])
 		;;
 	*)
 		dnl Metal only exists on Apple platforms
