@@ -228,7 +228,9 @@ noinst_LIBRARIES += libparpar_gf16_metal.a
 libpar2_a_DEPENDENCIES += libparpar_gf16_metal.a
 libparpar_gf16_metal_a_SOURCES = \
 	parpar/gf16/gpu_device_metal.mm \
-	parpar/gf16/gpu_device_metal.h
+	parpar/gf16/gpu_device_metal.h \
+	parpar/gf16/controller_metal.mm \
+	parpar/gf16/controller_metal.h
 libparpar_gf16_metal_a_OBJCXXFLAGS = -std=c++14 -fobjc-arc
 libparpar_gf16_metal_a_CPPFLAGS = -Iparpar/gf16 $(AM_CPPFLAGS)
 
@@ -484,7 +486,7 @@ EXTRA_DIST = \
 
 # Programs that need to be compiled for the test suite.
 # These are the unit tests.
-check_PROGRAMS = tests/letype_test tests/crc_test tests/md5_test tests/diskfile_test tests/libpar2_test tests/commandline_test tests/descriptionpacket_test tests/criticalpacket_test tests/reedsolomon_test tests/galois_test tests/utf8_test
+check_PROGRAMS = tests/letype_test tests/crc_test tests/md5_test tests/diskfile_test tests/libpar2_test tests/commandline_test tests/descriptionpacket_test tests/criticalpacket_test tests/reedsolomon_test tests/galois_test tests/utf8_test tests/gpu_test
 
 tests_letype_test_SOURCES = src/letype_test.cpp src/letype.h
 
@@ -514,6 +516,9 @@ tests_reedsolomon_test_SOURCES = src/reedsolomon_test.cpp src/reedsolomon.cpp sr
 tests_galois_test_SOURCES = src/galois_test.cpp src/galois.cpp src/galois.h
 
 tests_utf8_test_SOURCES = src/utf8_test.cpp src/utf8.cpp src/utf8.h
+
+tests_gpu_test_SOURCES = src/gpu_test.cpp
+tests_gpu_test_LDADD = libpar2.a $(LDADD)
 
 
 # List of all tests.
