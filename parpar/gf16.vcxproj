@@ -68,11 +68,23 @@
     <LinkIncremental>false</LinkIncremental>
     <IncludePath>gf16\opencl-include;$(IncludePath)</IncludePath>
   </PropertyGroup>
+  <!-- The Vulkan backend is built only when the Vulkan SDK is present. It
+       needs the headers to compile and glslangValidator to turn the compute
+       shader into SPIR-V, so a machine without the SDK builds everything else
+       and reports no Vulkan devices at runtime. Vulkan itself is still loaded
+       dynamically; nothing here creates a link-time dependency.
+       Force it off with -property:ParParVulkan=false. -->
+  <PropertyGroup>
+    <ParParVulkan Condition="'$(ParParVulkan)'=='' And Exists('$(VULKAN_SDK)\Include\vulkan\vulkan.h') And Exists('$(VULKAN_SDK)\Bin\glslangValidator.exe')">true</ParParVulkan>
+    <ParParVulkan Condition="'$(ParParVulkan)'==''">false</ParParVulkan>
+    <ParParVulkanDefines Condition="'$(ParParVulkan)'=='true'">PARPAR_VULKAN_SUPPORT;</ParParVulkanDefines>
+    <IncludePath Condition="'$(ParParVulkan)'=='true'">$(VULKAN_SDK)\Include;$(IncludePath)</IncludePath>
+  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_DEBUG;_CONSOLE;PARPAR_INVERT_SUPPORT;PARPAR_SLIM_GF16;PARPAR_GPU_SUPPORT;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_DEBUG;_CONSOLE;PARPAR_INVERT_SUPPORT;PARPAR_SLIM_GF16;PARPAR_GPU_SUPPORT;$(ParParVulkanDefines)%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <ConformanceMode>true</ConformanceMode>
       <BufferSecurityCheck>true</BufferSecurityCheck>
@@ -89,7 +101,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>false</SDLCheck>
-      <PreprocessorDefinitions>NDEBUG;_CONSOLE;PARPAR_INVERT_SUPPORT;PARPAR_SLIM_GF16;PARPAR_GPU_SUPPORT;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NDEBUG;_CONSOLE;PARPAR_INVERT_SUPPORT;PARPAR_SLIM_GF16;PARPAR_GPU_SUPPORT;$(ParParVulkanDefines)%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <ConformanceMode>true</ConformanceMode>
       <BufferSecurityCheck>false</BufferSecurityCheck>
@@ -276,6 +288,8 @@
     <ClCompile Include="gf16\controller.cpp" />
     <ClCompile Include="gf16\controller_cpu.cpp" />
     <ClCompile Include="gf16\gpu_device.cpp" />
+    <ClCompile Include="gf16\vulkan_loader.cpp" Condition="'$(ParParVulkan)'=='true'" />
+    <ClCompile Include="gf16\gpu_device_vulkan.cpp" Condition="'$(ParParVulkan)'=='true'" />
     <ClCompile Include="src\platform_warnings.c">
       <AdditionalOptions Condition="'$(PlatformToolset)|$(Platform)'=='ClangCL'">-mavx2 -mgfni %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
@@ -323,6 +337,19 @@
     <ClInclude Include="gf16\controller.h" />
     <ClInclude Include="gf16\controller_cpu.h" />
     <ClInclude Include="gf16\gpu_device.h" />
+    <ClInclude Include="gf16\gpu_device_vulkan.h" Condition="'$(ParParVulkan)'=='true'" />
+    <ClInclude Include="gf16\vulkan_loader.h" Condition="'$(ParParVulkan)'=='true'" />
+  </ItemGroup>
+  <!-- GLSL -> SPIR-V, emitted as a uint32_t[] header. The kernel that ships is
+       therefore always the one built from gf16_vulkan.comp in this tree; the
+       generated header is gitignored so the two cannot drift. -->
+  <ItemGroup>
+    <CustomBuild Include="gf16\gf16_vulkan.comp" Condition="'$(ParParVulkan)'=='true'">
+      <FileType>Document</FileType>
+      <Command>"$(VULKAN_SDK)\Bin\glslangValidator.exe" -V --target-env vulkan1.1 --vn gf16_vulkan_spv -o "%(RootDir)%(Directory)gf16_vulkan_spv.h" "%(FullPath)"</Command>
+      <Outputs>%(RootDir)%(Directory)gf16_vulkan_spv.h</Outputs>
+      <Message>Compiling %(Filename)%(Extension) to SPIR-V</Message>
+    </CustomBuild>
     <ClInclude Include="gf16\threadqueue.h" />
     <ClInclude Include="src\cpuid.h" />
     <ClInclude Include="src\hedley.h" />
