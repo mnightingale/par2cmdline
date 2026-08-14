@@ -172,5 +172,51 @@ AX_CHECK_LINK_FLAG([-latomic])
 AM_CONDITIONAL([HAS_LIBATOMIC], [test x$ax_cv_check_ldflags___latomic = xyes])
 AM_COND_IF([HAS_LIBATOMIC], [AC_SUBST(LDFLAGS_LIBATOMIC, "-latomic")])
 
+dnl ---- GPU backends ----
+dnl A GPU is never required: these only add backends, and the CPU path stays
+dnl the default whenever no usable device is found at runtime.
+
+dnl Metal (macOS/Apple platforms)
+AC_ARG_ENABLE([metal],
+	[AS_HELP_STRING([--disable-metal], [do not build the Metal GPU backend (macOS)])],
+	[enable_metal=$enableval], [enable_metal=auto])
+
+dnl The Metal backend is Objective-C++. AC_PROG_OBJCXX must be invoked
+dnl unconditionally: it defines the am__fastdepOBJCXX conditional, and automake
+dnl rejects a conditional that is only sometimes defined ("conditional
+dnl am__fastdepOBJCXX was never defined"). It is cheap on platforms that will
+dnl never build the backend.
+AC_PROG_OBJCXX
+
+have_metal=no
+AS_IF([test "x$enable_metal" != xno], [
+	case $host_os in
+	darwin*)
+		AC_MSG_CHECKING([for Metal framework])
+		save_LIBS="$LIBS"
+		LIBS="$LIBS -framework Foundation -framework Metal"
+		AC_LINK_IFELSE([AC_LANG_PROGRAM([[]], [[]])],
+			[have_metal=yes], [have_metal=no])
+		LIBS="$save_LIBS"
+		AC_MSG_RESULT([$have_metal])
+		AS_IF([test "x$OBJCXX" = x], [have_metal=no])
+		;;
+	*)
+		dnl Metal only exists on Apple platforms
+		;;
+	esac
+
+	AS_IF([test "x$enable_metal" = xyes && test "x$have_metal" = xno],
+		[AC_MSG_ERROR([--enable-metal given but the Metal framework is unavailable])])
+])
+
+dnl Note: PARPAR_METAL_SUPPORT is passed via AM_CPPFLAGS in Makefile.am rather
+dnl than AC_DEFINE'd, because the parpar/ sources do not include config.h.
+AM_CONDITIONAL([HAS_METAL], [test x$have_metal = xyes])
+AM_COND_IF([HAS_METAL], [
+	AC_SUBST(CPPFLAGS_METAL, "-DPARPAR_METAL_SUPPORT")
+	AC_SUBST(LDFLAGS_METAL, "-framework Foundation -framework Metal")
+])
+
 AC_CONFIG_FILES([Makefile])
 AC_OUTPUT

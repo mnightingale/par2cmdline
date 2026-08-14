@@ -22,6 +22,7 @@
 #include<iostream>
 #include<algorithm>
 #include "commandline.h"
+#include "../parpar/gf16/gpu_device.h"
 #include <fstream>  //ADDED for @FILELIST FUNCTIONALY
 
 #ifdef _MSC_VER
@@ -72,6 +73,40 @@ void CommandLine::showversion(void)
   std::cout << version << std::endl;
 }
 
+void CommandLine::listgpus(void)
+{
+  std::vector<GPUDeviceInfo> devices = gpu_enumerate_devices();
+
+  if (devices.empty())
+  {
+    std::cout << "No GPU devices found; the CPU backend will be used." << std::endl;
+    return;
+  }
+
+  std::cout << "GPU devices:" << std::endl;
+  for (size_t i = 0; i < devices.size(); i++)
+  {
+    const GPUDeviceInfo &d = devices[i];
+    std::cout << "  " << d.id << ": " << d.name
+      << " [" << gpu_api_name(d.api) << "]";
+    if (!d.supported)
+      std::cout << " - unsupported (" << d.unsupportedReason << ")";
+    std::cout << '\n';
+
+    std::cout << "       memory: " << (d.memory >> 20) << " MB"
+      << ", max allocation: " << (d.maxAllocation >> 20) << " MB"
+      << (d.unifiedMemory ? ", unified" : "") << '\n'
+      << "       max threads/group: " << d.maxWorkGroup
+      << ", group memory: " << d.localMemory << " bytes" << '\n';
+  }
+
+  int def = gpu_default_device();
+  if (def < 0)
+    std::cout << "\nNo usable GPU; --gpu=auto will select the CPU backend." << std::endl;
+  else
+    std::cout << "\n--gpu=auto would select device " << def << '.' << std::endl;
+}
+
 void CommandLine::banner(void)
 {
   std::cout << "Copyright (C) 2003-2015 Peter Brian Clements.\n"
@@ -96,6 +131,7 @@ void CommandLine::usage(void)
     "  par2 -h  : show this help\n"
     "  par2 -V  : show version\n"
     "  par2 -VV : show version and copyright\n"
+    "  par2 --list-gpus : list GPU devices usable for processing\n"
     "\n"
     "  par2 c(reate) [options] <PAR2 file> [files] : Create PAR2 files\n"
     "  par2 v(erify) [options] <PAR2 file> [files] : Verify files using PAR2 file\n"
@@ -226,6 +262,11 @@ bool CommandLine::ReadArgs(int argc, const char * const *argv)
 	showversion();
 	std::cout << "A " BASE_PACKAGE " version " BASE_VERSION " fork, using a ParPar processing backend\n\n";
 	banner();
+	return true;
+      }
+      else if (argv[0] == std::string("--list-gpus"))
+      {
+	listgpus();
 	return true;
       }
     }

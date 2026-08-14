@@ -68,9 +68,11 @@ libparpar_gf16_a_SOURCES = \
 	parpar/gf16/gf16_lookup.c \
 	parpar/gf16/gf_add_generic.c \
 	parpar/gf16/gf16_cksum_generic.c \
+	parpar/gf16/gpu_device.cpp \
 	parpar/gf16/controller.h \
 	parpar/gf16/controller_cpu.h \
 	parpar/gf16/controller_ocl.h \
+	parpar/gf16/gpu_device.h \
 	parpar/gf16/gf_add.h \
 	parpar/gf16/gf_add_common.h \
 	parpar/gf16/gf16_affine.h \
@@ -219,6 +221,18 @@ libparpar_gf16_rvv_zvbc_a_SOURCES = \
 	parpar/gf16/gf16_clmul_rvv.h
 libparpar_gf16_rvv_zvbc_a_CFLAGS = $(CFLAGS_RV64ZVBC) $(CFLAGS_RV32ZVBC) $(libparpar_gf16_a_CFLAGS)
 
+# Metal GPU backend (macOS). Objective-C++, so it lives in its own archive
+# rather than alongside the ISA-specific C sources.
+if HAS_METAL
+noinst_LIBRARIES += libparpar_gf16_metal.a
+libpar2_a_DEPENDENCIES += libparpar_gf16_metal.a
+libparpar_gf16_metal_a_SOURCES = \
+	parpar/gf16/gpu_device_metal.mm \
+	parpar/gf16/gpu_device_metal.h
+libparpar_gf16_metal_a_OBJCXXFLAGS = -std=c++14 -fobjc-arc
+libparpar_gf16_metal_a_CPPFLAGS = -Iparpar/gf16 $(AM_CPPFLAGS)
+endif
+
 libparpar_hasher_a_SOURCES = \
 	parpar/hasher/crc_zeropad.c \
 	parpar/hasher/hasher.cpp \
@@ -323,10 +337,10 @@ man_MANS = man/par2.1
 
 par2_SOURCES = src/par2cmdline.cpp \
 	src/commandline.cpp src/commandline.h
-par2_LDADD = libpar2.a -lstdc++ $(PTHREAD_LIBS) $(LDFLAGS_LIBATOMIC)
+par2_LDADD = libpar2.a -lstdc++ $(PTHREAD_LIBS) $(LDFLAGS_LIBATOMIC) $(LDFLAGS_METAL)
 
-LDADD = -lstdc++ $(PTHREAD_LIBS) $(LDFLAGS_LIBATOMIC)
-AM_CPPFLAGS = -Wall -DNDEBUG -DPARPAR_ENABLE_HASHER_MD5CRC -DPARPAR_INVERT_SUPPORT -DPARPAR_SLIM_GF16 -DPARPAR_GPU_SUPPORT
+LDADD = -lstdc++ $(PTHREAD_LIBS) $(LDFLAGS_LIBATOMIC) $(LDFLAGS_METAL)
+AM_CPPFLAGS = -Wall -DNDEBUG -DPARPAR_ENABLE_HASHER_MD5CRC -DPARPAR_INVERT_SUPPORT -DPARPAR_SLIM_GF16 -DPARPAR_GPU_SUPPORT $(CPPFLAGS_METAL)
 AM_CXXFLAGS = -std=c++14 $(PTHREAD_CFLAGS)
 
 EXTRA_DIST = \

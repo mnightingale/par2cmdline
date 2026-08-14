@@ -58,6 +58,7 @@ public:
 
 
   static void showversion(void);
+  static void listgpus(void);
   static void banner(void);
   // Display details of the correct format for command line parameters.
   static void usage(void);
