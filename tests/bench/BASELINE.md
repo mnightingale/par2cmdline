@@ -16,6 +16,7 @@ existed. Re-measure with `parbench.py` on the same machine when comparing.
 ## Results
 
 Settings: 20 files, `-b2000`, `-r15`, 10% damage, best of 3, **warm page cache**.
+These are wall-clock totals including the scan phase.
 
 | Corpus | Create | Repair (delete) | Repair (corrupt) |
 | --- | --- | --- | --- |
@@ -25,61 +26,76 @@ Settings: 20 files, `-b2000`, `-r15`, 10% damage, best of 3, **warm page cache**
 At 10 GiB the block size is 5.1 MiB, with 2000 source and 300 recovery blocks;
 10% damage means 200 blocks are reconstructed.
 
-## Derived GF16 throughput
+## GF16 throughput
 
-Reconstructing `N` blocks from `M` inputs costs `M × N × blocksize` multiply-adds:
+Repair is two phases, and they must be separated. `par2 repair` first *scans*
+every present file (reading and hashing it) and only then reconstructs the
+missing blocks. Dividing total repair time by the GF16 work therefore charges
+the scan to the compute and understates throughput badly.
 
-- 1 GiB: 2000 × 200 × 536,872 B = **200 GiB** in 2.06 s → **104 GB/s**
-- 10 GiB: 2000 × 200 × 5,368,712 B = **2.0 TiB** in 20.77 s → **103 GB/s**
+Measured at 10 GiB by timing `par2 verify` (the scan alone) against a full repair:
 
-The two agree closely, so the measurement scales linearly and the figure is
-trustworthy as a baseline.
-
-## What this implies for a GPU backend
-
-**On this machine the ceiling is roughly 2x.** The M2 Pro's GPU shares the same
-~200 GB/s unified memory as the CPU, and the CPU path already sustains ~103 GB/s
-— about half of peak. Since the algorithm must stream inputs and outputs through
-that same memory, no Metal kernel can exceed ~200 GB/s here. ParPar's NEON code
-is genuinely well optimised; this is not headroom left on the table.
-
-**The corrupt-mode floor is lower still.** The 27 s difference between delete
-(20.77 s) and corrupt (47.82 s) at 10 GiB is the CPU-bound `FileCheckSummer`
-scan, which GPU GF16 acceleration does not touch. Even an infinitely fast GF16
-backend would only take corrupt-mode repair from 47.8 s to ~27 s — about 1.8x
-end-to-end in the realistic damage case.
-
-**Discrete GPUs are where the win is.** An RTX 4090 (~1000 GB/s) or RX 7900 XTX
-(~960 GB/s) against a desktop CPU's ~50–90 GB/s is a 5–10x ratio rather than 2x.
-The Metal backend is worth building for macOS coverage and because it proves the
-whole integration path, but the headline performance result should be expected
-to come from Vulkan on discrete hardware.
-
-## Measured Metal kernel throughput
-
-Raw `gf16_muladd` dispatch, 200 output slices, 1 MiB chunks, best of 5. This is
-kernel time only — it excludes host transfer and checksum cost, so end-to-end
-repair will be lower.
-
-| Inputs per batch | Outputs per group | GF16 GB/s |
+| Phase | CPU | GPU (Metal) |
 | --- | --- | --- |
-| 8 | 8 | 182.5 |
-| 16 | 4 | 185.7 |
-| 16 | 8 | 186.9 |
-| 32 | 4 | **189.3** |
+| Scan | 9.72 s | 9.72 s |
+| GF16 reconstruct | 11.45 s | 12.50 s (GPU busy 11.36 s) |
+| Total | 21.17 s | 22.34 s |
 
-**189 GB/s against the CPU's 103 GB/s — 1.84x**, which is essentially the
-predicted ceiling: the kernel is saturating the machine's ~200 GB/s unified
-memory. Spread across the tuning grid is only ~5%, confirming the kernel is
-bandwidth-bound rather than ALU-bound, so there is little headroom left here.
-Outputs-per-group of 4 or more is the sweet spot; below that, each input read
-serves too few outputs.
+Reconstructing 200 blocks from 2000 inputs at 5,368,712 B is 2147 GB of
+multiply-add, giving:
 
-Correctness was established first, against an independent scalar GF(2^16)
-oracle (not ParPar's own implementation, which would only prove
-self-consistency): 160 shape combinations covering input batches of 1–16,
-output counts that do and do not divide the group size, slice lengths from 1 to
-257 vectors, and both accumulate and overwrite modes — all bit-exact.
+- **CPU: 187 GB/s**
+- **GPU: 189 GB/s** (from `MTLCommandBuffer` GPU busy time)
+
+**The two are within 1% of each other.**
+
+## What this means
+
+Both paths saturate the M2 Pro's ~200 GB/s unified memory, which the CPU and
+GPU share. The NEON path was already at ~94% of that ceiling, so there was
+never headroom for a GPU to exploit — and the GPU additionally pays for staging
+slices into device memory and reading results back, which is why it comes out
+slightly *slower* overall:
+
+| Mode | CPU | GPU | Ratio |
+| --- | --- | --- | --- |
+| Repair, delete | 21.34 s | 22.42 s | 0.95x |
+| Repair, corrupt | 47.50 s | 49.57 s | 0.96x |
+| Create | 24.80 s | 20.71 s | 1.20x |
+
+Creation is the one case that improves, because it is not purely GF16-bound.
+
+An earlier revision of this file claimed a 103 GB/s CPU baseline and a 1.84x
+kernel speedup. That was wrong: the 103 GB/s figure included the scan phase in
+the compute time, making the CPU look ~1.8x slower than it is. The Metal kernel
+is not faster than the NEON path on this hardware; it is equal to it.
+
+## Where a GPU backend does pay off
+
+The conclusion is about *bandwidth ratio*, not about GPU versus CPU compute.
+Apple Silicon is the worst case for this work because both processors draw on
+one memory pool. A discrete GPU does not:
+
+| | Memory bandwidth |
+| --- | --- |
+| M2 Pro (shared by CPU and GPU) | ~200 GB/s |
+| RTX 4090 | ~1000 GB/s |
+| RX 7900 XTX | ~960 GB/s |
+| Typical desktop CPU | ~50–90 GB/s |
+
+That is a 10x ratio rather than 1x, which is where the Vulkan backend is
+expected to earn its keep. Nothing here has been measured on such hardware.
+
+## Profiling
+
+Set `PARPAR_GPU_STATS=1` to print a breakdown on the GPU path:
+
+```
+[GPU STATS] wall 12.50s | gpu 11.36s over 125 dispatches | stage 2.68s (10.0 GiB) | lut+encode 0.02s | readback 0.25s
+```
+
+This separates real GPU busy time from host-side staging, which is what makes
+it possible to tell a slow kernel from lost overlap.
 
 ## Metal device capabilities (M2 Pro)
 

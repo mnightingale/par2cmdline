@@ -17,6 +17,9 @@
 #include "threadqueue.h"
 #include "gf16mul.h"
 #include <memory>
+#include <atomic>
+#include <mutex>
+#include <vector>
 
 #ifdef USE_LIBUV
 // ParPar upstream drives backends through libuv rather than std::future. That
@@ -28,8 +31,15 @@
 
 class PAR2ProcMetalStaging : public IPAR2ProcStaging {
 public:
-	unsigned stagedInputs; // inputs written into this area
-	PAR2ProcMetalStaging() : IPAR2ProcStaging(), stagedInputs(0) {}
+	// Staging is spread over several worker threads, so the batch is dispatched
+	// by whichever worker finishes last rather than by a fixed one. `pending`
+	// counts outstanding slices plus one "batch open" token, held until the
+	// batch is closed so an early-finishing slice cannot trigger a dispatch
+	// before the remaining slices have even been queued.
+	std::atomic<unsigned> pending;
+	std::atomic<unsigned> submitCount; // inputs to dispatch, 0 while open
+
+	PAR2ProcMetalStaging() : IPAR2ProcStaging(), pending(0), submitCount(0) {}
 };
 
 // Holds the Objective-C objects; defined in controller_metal.mm.
@@ -54,10 +64,22 @@ private:
 	Galois16Methods gfMethod;
 
 	std::vector<PAR2ProcMetalStaging> staging;
-	bool outputDirty; // whether any batch has written the output buffer yet
 
-	MessageThread transferThread;
+	// Staging (copy + GF16 checksum of each slice into device memory) is the
+	// host-side bottleneck, so it runs across several threads rather than one.
+	std::vector<std::unique_ptr<MessageThread>> transferThreads;
+	std::atomic<unsigned> nextTransferThread;
+	int numThreads;
 	static void transfer_slice(ThreadMessageQueue<void*>& q);
+	void sendToTransfer(void* req);
+
+	// Serialises kernel dispatch: the accumulate-vs-overwrite decision and the
+	// command buffer commit must stay in the same order, or a batch could XOR
+	// into a buffer that a later overwrite then discards.
+	std::mutex dispatchMutex;
+
+	void beginBatch(PAR2ProcMetalStaging& area);
+	void releaseStageToken(unsigned area);
 
 	void set_coeffs(PAR2ProcMetalStaging& area, unsigned idx, uint16_t inputNum);
 	void set_coeffs(PAR2ProcMetalStaging& area, unsigned idx, const uint16_t* coeffs);
@@ -67,6 +89,7 @@ private:
 	void run_kernel(unsigned area, unsigned numInputs) override;
 	bool reallocBuffers();
 	void reset_state();
+	void drainTransfers();
 	void chooseGeometry();
 
 	PAR2ProcMetal(const PAR2ProcMetal&);
@@ -80,6 +103,10 @@ public:
 	bool isAvailable() const { return initSuccess; }
 
 	bool init(unsigned inputGrouping = 0, Galois16Methods cksumMethod = GF16_AUTO);
+
+	// Number of staging threads; must be set before init(). 0 picks a default.
+	void setNumThreads(int threads);
+	int getNumThreads() const { return numThreads; }
 
 	void setSliceSize(size_t size) override;
 	bool setCurrentSliceSize(size_t size) override;

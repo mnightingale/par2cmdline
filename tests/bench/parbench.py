@@ -199,7 +199,12 @@ def create(cfg, backend, manifest):
     elapsed, rc, out = run_par2(cfg, args, cfg.corpus_dir)
     if rc != 0:
         sys.exit(f"par2 create failed (rc={rc}):\n{out}")
-    return elapsed, parse_create_stats(out)
+    stats = parse_create_stats(out)
+    # Cache for --skip-create, which otherwise has no way to learn the block
+    # size that the damage functions need.
+    with open(os.path.join(cfg.workdir, "create-stats.json"), "w") as f:
+        json.dump(stats, f)
+    return elapsed, stats
 
 
 def backend_args(cfg, backend):
@@ -456,6 +461,10 @@ def main():
     for backend in cfg.backend:
         if cfg.skip_create and os.path.exists(os.path.join(cfg.corpus_dir, "bench.par2")):
             print(f"Skipping create for {backend} (--skip-create)")
+            cached = os.path.join(cfg.workdir, "create-stats.json")
+            if stats is None and os.path.exists(cached):
+                with open(cached) as f:
+                    stats = json.load(f)
             continue
         print(f"\n=== create [{backend}] ===")
         secs, st = create(cfg, backend, manifest)

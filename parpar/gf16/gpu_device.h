@@ -72,7 +72,7 @@ class IPAR2ProcBackend;
 // CPU backend. On success, `nameOut` (when given) receives a description
 // suitable for reporting to the user, and the caller owns the returned object.
 IPAR2ProcBackend* gpu_create_backend(int deviceId, size_t sliceSize,
-                                     unsigned inputGrouping,
+                                     unsigned inputGrouping, int numThreads = 0,
                                      std::string* nameOut = nullptr);
 
 #endif // defined(__GF16_GPU_DEVICE_H)

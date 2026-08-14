@@ -6,9 +6,44 @@
 #include <cassert>
 #include <cstring>
 #include <algorithm>
+#include <thread>
+#include <chrono>
+#include <cstdlib>
+#include <cstdio>
 
 // Compiled from gf16_metal.metal by the build; defines gf16_metal_lib[].
 #include "gf16_metal_lib.h"
+
+// Set PARPAR_GPU_STATS=1 to print a breakdown of where GPU-path time goes.
+// Answers the question a wall-clock number cannot: whether a disappointing
+// result is the kernel, the host-side staging, or lost overlap between them.
+static bool gpu_stats_enabled() {
+	static const bool enabled = getenv("PARPAR_GPU_STATS") != NULL;
+	return enabled;
+}
+
+namespace {
+struct GpuStats {
+	std::atomic<uint64_t> stageNs{0}, stageBytes{0};
+	std::atomic<uint64_t> lutNs{0};
+	std::atomic<uint64_t> readbackNs{0};
+	std::atomic<uint64_t> gpuNs{0};
+	std::atomic<uint64_t> encodeNs{0};
+	std::atomic<uint64_t> dispatches{0};
+	double wallStart = 0;
+};
+GpuStats g_stats;
+
+inline double now_s() {
+	using namespace std::chrono;
+	return duration<double>(steady_clock::now().time_since_epoch()).count();
+}
+inline uint64_t now_ns() {
+	using namespace std::chrono;
+	return (uint64_t)duration_cast<nanoseconds>(
+		steady_clock::now().time_since_epoch()).count();
+}
+}
 
 // Must match the kernel's definitions.
 #define GF16_LUT_ENTRIES 64
@@ -79,10 +114,9 @@ PAR2ProcMetal::PAR2ProcMetal(int _deviceId, int stagingAreas)
 : IPAR2ProcBackend(), impl(new PAR2ProcMetalImpl()), initSuccess(false),
   deviceId(_deviceId), sliceSize(0), sliceSizeCksum(0), sliceSizeAligned(0),
   allocatedSliceSize(0), outputsPerGroup(4), threadsPerGroup(256),
-  gf(nullptr), gfMethod(GF16_AUTO), staging(stagingAreas), outputDirty(false),
-  transferThread(PAR2ProcMetal::transfer_slice)
+  gf(nullptr), gfMethod(GF16_AUTO), staging(stagingAreas),
+  nextTransferThread(0), numThreads(0)
 {
-	transferThread.name = "metal_transfer";
 
 	@autoreleasepool {
 		NSArray<id<MTLDevice>>* devices = MTLCopyAllDevices();
@@ -121,8 +155,33 @@ const char* PAR2ProcMetal::getMethodName() const {
 	return "Metal (nibble LUT)";
 }
 
+static void gpu_stats_report(double wall) {
+	const double s = 1e-9;
+	fprintf(stderr,
+		"[GPU STATS] wall %.2fs | gpu %.2fs over %llu dispatches | "
+		"stage %.2fs (%.1f GiB) | lut+encode %.2fs | readback %.2fs\n",
+		wall,
+		g_stats.gpuNs.load() * s, (unsigned long long)g_stats.dispatches.load(),
+		g_stats.stageNs.load() * s,
+		g_stats.stageBytes.load() / 1073741824.0,
+		g_stats.encodeNs.load() * s,
+		g_stats.readbackNs.load() * s);
+}
+
 void PAR2ProcMetal::_deinit() {
+	drainTransfers();
+	if(gpu_stats_enabled() && g_stats.wallStart > 0) {
+		gpu_stats_report(now_s() - g_stats.wallStart);
+		g_stats.wallStart = 0;
+	}
 	@autoreleasepool {
+		// Command buffers on a queue complete in order, so waiting on an empty
+		// one that is committed last waits for all outstanding GPU work.
+		if(impl->queue) {
+			id<MTLCommandBuffer> cb = [impl->queue commandBuffer];
+			[cb commit];
+			[cb waitUntilCompleted];
+		}
 		impl->stagingInput.assign(impl->stagingInput.size(), nil);
 		impl->stagingLut.assign(impl->stagingLut.size(), nil);
 		impl->output = nil;
@@ -136,8 +195,28 @@ void PAR2ProcMetal::freeProcessingMem() {
 	}
 }
 
+void PAR2ProcMetal::setNumThreads(int threads) {
+	numThreads = threads;
+}
+
 bool PAR2ProcMetal::init(unsigned inputGrouping, Galois16Methods cksumMethod) {
 	if(!initSuccess) return false;
+
+	// Staging is memcpy-and-checksum bound rather than bandwidth bound, so a
+	// handful of threads saturates it; more would just contend with the GPU for
+	// the same unified memory.
+	if(numThreads <= 0) {
+		unsigned hw = std::thread::hardware_concurrency();
+		numThreads = (int)(hw ? (hw < 4 ? hw : 4) : 2);
+	}
+	if(transferThreads.size() != (size_t)numThreads) {
+		transferThreads.clear();
+		for(int i = 0; i < numThreads; i++) {
+			transferThreads.emplace_back(new MessageThread(PAR2ProcMetal::transfer_slice));
+			transferThreads.back()->name = "metal_transfer";
+		}
+		nextTransferThread.store(0, std::memory_order_relaxed);
+	}
 
 	outputExponents.clear();
 
@@ -156,6 +235,7 @@ bool PAR2ProcMetal::init(unsigned inputGrouping, Galois16Methods cksumMethod) {
 	reset_state();
 	statBatchesStarted = 0;
 	chooseGeometry();
+	if(gpu_stats_enabled() && g_stats.wallStart == 0) g_stats.wallStart = now_s();
 	return true;
 }
 
@@ -180,11 +260,11 @@ void PAR2ProcMetal::reset_state() {
 	currentStagingInputs = 0;
 	stagingActiveCount = 0;
 	for(auto& area : staging) {
-		area.stagedInputs = 0;
+		area.pending.store(0, std::memory_order_relaxed);
+		area.submitCount.store(0, std::memory_order_relaxed);
 		area.setIsActive(false);
 	}
 	processingAdd = false;
-	outputDirty = false;
 }
 
 // ---- sizing --------------------------------------------------------------
@@ -268,8 +348,14 @@ void PAR2ProcMetal::set_coeffs(PAR2ProcMetalStaging& area, unsigned idx,
 
 // ---- transfer worker -----------------------------------------------------
 
+enum MetalReqKind {
+	METAL_REQ_STAGE,    // copy an input slice into the staging buffer
+	METAL_REQ_READBACK, // copy an output slice back, verifying its checksum
+	METAL_REQ_BARRIER   // no work; completing it means the queue has drained
+};
+
 struct MetalTransferReq {
-	bool finish; // false = stage an input, true = read back an output
+	MetalReqKind kind;
 
 	PAR2ProcMetal* parent;
 	PAR2ProcMetalImpl* impl;
@@ -283,7 +369,6 @@ struct MetalTransferReq {
 	unsigned area;
 	unsigned slot;
 	size_t srcLen;
-	unsigned submitInputs; // non-zero: dispatch the batch after staging
 	std::promise<void> promPrep;
 
 	// readback
@@ -292,39 +377,100 @@ struct MetalTransferReq {
 	std::promise<bool> promOut;
 };
 
+void PAR2ProcMetal::sendToTransfer(void* req) {
+	unsigned i = nextTransferThread.fetch_add(1, std::memory_order_relaxed);
+	transferThreads[i % transferThreads.size()]->send(req);
+}
+
 void PAR2ProcMetal::transfer_slice(ThreadMessageQueue<void*>& q) {
 	MetalTransferReq* req;
 	while((req = static_cast<MetalTransferReq*>(q.pop())) != NULL) {
-		if(req->finish) {
+		if(req->kind == METAL_REQ_BARRIER) {
+			req->promOut.set_value(true);
+		} else if(req->kind == METAL_REQ_READBACK) {
 			const uint8_t* src = (const uint8_t*)[req->impl->output contents]
 				+ req->outputOffset;
 			// Verifies the GF16 checksum the kernel carried through the
 			// multiply-add; a false here means the GPU produced bad data.
+			const uint64_t t0 = gpu_stats_enabled() ? now_ns() : 0;
 			int ok = req->gf->copy_cksum_check(req->local, src, req->sliceLen);
+			if(gpu_stats_enabled()) g_stats.readbackNs += now_ns() - t0;
 			req->promOut.set_value(ok != 0);
 		} else {
 			if(req->local) {
 				uint8_t* dst = (uint8_t*)[req->impl->stagingInput[req->area] contents]
 					+ (size_t)req->slot * req->parent->getAllocSliceSize();
+				const uint64_t t0 = gpu_stats_enabled() ? now_ns() : 0;
 				req->gf->copy_cksum(dst, req->local, req->srcLen, req->sliceLen);
+				if(gpu_stats_enabled()) {
+					g_stats.stageNs += now_ns() - t0;
+					g_stats.stageBytes += req->srcLen;
+				}
 			}
-			if(req->submitInputs)
-				req->parent->run_kernel(req->area, req->submitInputs);
+			// Let the caller reuse its buffer before we consider dispatching,
+			// so a slow dispatch cannot stall the reader.
 			req->promPrep.set_value();
+			req->parent->releaseStageToken(req->area);
 		}
 		delete req;
 	}
 }
 
+// Blocks until every queued transfer has been handled. The queue is FIFO, so
+// completing a barrier means everything sent before it is done. Needed because
+// MessageThread::end() signals the worker without joining it, and _deinit()
+// releases the buffers those requests reference.
+void PAR2ProcMetal::drainTransfers() {
+	// One barrier per thread: each queue is FIFO, so a completed barrier means
+	// that thread has finished everything sent to it earlier.
+	std::vector<std::future<bool>> barriers;
+	barriers.reserve(transferThreads.size());
+	for(auto& t : transferThreads) {
+		if(t->empty()) continue;
+		MetalTransferReq* req = new MetalTransferReq();
+		req->kind = METAL_REQ_BARRIER;
+		req->parent = this;
+		req->impl = impl.get();
+		req->gf = gf.get();
+		barriers.push_back(req->promOut.get_future());
+		t->send(req);
+	}
+	for(auto& f : barriers) f.get();
+}
+
+// ---- batch completion ----------------------------------------------------
+
+void PAR2ProcMetal::beginBatch(PAR2ProcMetalStaging& area) {
+	area.submitCount.store(0, std::memory_order_relaxed);
+	// The "batch open" token; released when the batch is closed.
+	area.pending.store(1, std::memory_order_relaxed);
+}
+
+// Drops one reference to a batch. The last one out dispatches it, which may be
+// a staging worker or the thread that closed the batch - whichever finishes
+// last. submitCount is published with release and read with acquire so the
+// dispatcher always sees the closed batch's size.
+void PAR2ProcMetal::releaseStageToken(unsigned areaIdx) {
+	auto& area = staging[areaIdx];
+	if(area.pending.fetch_sub(1, std::memory_order_acq_rel) != 1)
+		return;
+	unsigned n = area.submitCount.load(std::memory_order_acquire);
+	if(n) run_kernel(areaIdx, n);
+}
+
 // ---- dispatch ------------------------------------------------------------
 
 void PAR2ProcMetal::run_kernel(unsigned area, unsigned numInputs) {
+	std::lock_guard<std::mutex> dispatchLock(dispatchMutex);
 	@autoreleasepool {
 		const unsigned numOutputs = (unsigned)outputExponents.size();
 		auto& st = staging[area];
 
+		const uint64_t tEncode0 = gpu_stats_enabled() ? now_ns() : 0;
+
 		// Build this batch's lookup tables, laid out [output][input][64] to
 		// match the kernel's threadgroup staging.
+		const uint64_t tLut0 = gpu_stats_enabled() ? now_ns() : 0;
 		uint16_t* luts = (uint16_t*)[impl->stagingLut[area] contents];
 		for(unsigned o = 0; o < numOutputs; o++) {
 			for(unsigned i = 0; i < numInputs; i++) {
@@ -333,11 +479,20 @@ void PAR2ProcMetal::run_kernel(unsigned area, unsigned numInputs) {
 			}
 		}
 
+		// Whether this dispatch accumulates or overwrites is decided here, from
+		// the flag as it stood before this batch - matching PAR2ProcCPU. Tracking
+		// it separately would miss discardOutput(), which resets processingAdd
+		// between chunks and must force the next dispatch to overwrite.
+		const bool accumulate = processingAdd;
+		processingAdd = true;
+
+		if(gpu_stats_enabled()) g_stats.lutNs += now_ns() - tLut0;
+
 		const uint32_t vecPerSlice = (uint32_t)(sliceSizeAligned / GF16_VECTOR_BYTES);
 		GF16Params params = {
 			numInputs, numOutputs, outputsPerGroup,
 			vecPerSlice, vecPerSlice,
-			outputDirty ? 1u : 0u
+			accumulate ? 1u : 0u
 		};
 
 		id<MTLCommandBuffer> cb = [impl->queue commandBuffer];
@@ -364,13 +519,18 @@ void PAR2ProcMetal::run_kernel(unsigned area, unsigned numInputs) {
 		// accumulate into the output buffer without racing each other.
 		PAR2ProcMetal* self = this;
 		[cb addCompletedHandler:^(id<MTLCommandBuffer> buf) {
-			(void)buf;
+			if(gpu_stats_enabled()) {
+				// Actual time on the GPU, as opposed to wall time, which
+				// includes queueing and any host-side stall.
+				double gpu = [buf GPUEndTime] - [buf GPUStartTime];
+				if(gpu > 0) g_stats.gpuNs += (uint64_t)(gpu * 1e9);
+				g_stats.dispatches++;
+			}
 			self->stagingActiveCount_dec();
 			self->_setAreaActive(area, false);
 		}];
 		[cb commit];
-
-		outputDirty = true;
+		if(gpu_stats_enabled()) g_stats.encodeNs += now_ns() - tEncode0;
 	}
 }
 
@@ -391,10 +551,11 @@ FUTURE_RETURN_T PAR2ProcMetal::_addInput(const void* buffer, size_t size,
 	auto& area = staging[currentStagingArea];
 	assert(!area.getIsActive());
 
+	if(currentStagingInputs == 0) beginBatch(area);
 	set_coeffs(area, currentStagingInputs, inputNumOrCoeffs);
 
 	MetalTransferReq* req = new MetalTransferReq();
-	req->finish = false;
+	req->kind = METAL_REQ_STAGE;
 	req->parent = this;
 	req->impl = impl.get();
 	req->gf = gf.get();
@@ -406,13 +567,18 @@ FUTURE_RETURN_T PAR2ProcMetal::_addInput(const void* buffer, size_t size,
 	req->slot = currentStagingInputs;
 
 	currentStagingInputs++;
-	req->submitInputs = (flush || currentStagingInputs == inputBatchSize || (
+	const unsigned submit = (flush || currentStagingInputs == inputBatchSize || (
 		// nothing in flight: submit early rather than leave the GPU idle
 		stagingActiveCount_get() == 0 && staging.size() > 1
 			&& currentStagingInputs >= minInBatchSize
 	)) ? currentStagingInputs : 0;
 
-	if(req->submitInputs) {
+	// This slice's reference, taken before it is queued so a worker cannot
+	// complete it and close the batch prematurely.
+	area.pending.fetch_add(1, std::memory_order_relaxed);
+
+	const unsigned areaIdx = currentStagingArea;
+	if(submit) {
 		stagingActiveCount_inc();
 		area.setIsActive(true);
 		statBatchesStarted++;
@@ -421,9 +587,13 @@ FUTURE_RETURN_T PAR2ProcMetal::_addInput(const void* buffer, size_t size,
 			currentStagingArea = 0;
 	}
 
-	processingAdd = true;
 	auto future = req->promPrep.get_future();
-	transferThread.send(req);
+	sendToTransfer(req);
+
+	if(submit) {
+		area.submitCount.store(submit, std::memory_order_release);
+		releaseStageToken(areaIdx); // drops the batch-open token
+	}
 	return future;
 }
 
@@ -440,20 +610,21 @@ FUTURE_RETURN_T PAR2ProcMetal::addInput(const void* buffer, size_t size,
 void PAR2ProcMetal::dummyInput(uint16_t inputNum, bool flush) {
 	// Benchmarking hook: account for an input without transferring it.
 	auto& area = staging[currentStagingArea];
+	if(currentStagingInputs == 0) beginBatch(area);
 	set_coeffs(area, currentStagingInputs, inputNum);
 	currentStagingInputs++;
-	unsigned submit = (flush || currentStagingInputs == inputBatchSize)
+	const unsigned submit = (flush || currentStagingInputs == inputBatchSize)
 		? currentStagingInputs : 0;
 	if(submit) {
 		stagingActiveCount_inc();
 		area.setIsActive(true);
 		statBatchesStarted++;
 		currentStagingInputs = 0;
-		unsigned a = currentStagingArea;
+		const unsigned areaIdx = currentStagingArea;
 		if(++currentStagingArea == staging.size()) currentStagingArea = 0;
-		run_kernel(a, submit);
+		area.submitCount.store(submit, std::memory_order_release);
+		releaseStageToken(areaIdx);
 	}
-	processingAdd = true;
 }
 
 bool PAR2ProcMetal::fillInput(const void* buffer) {
@@ -464,30 +635,28 @@ bool PAR2ProcMetal::fillInput(const void* buffer) {
 void PAR2ProcMetal::flush() {
 	if(!currentStagingInputs) return;
 
-	MetalTransferReq* req = new MetalTransferReq();
-	req->finish = false;
-	req->parent = this;
-	req->impl = impl.get();
-	req->gf = gf.get();
-	req->local = NULL; // flush marker: dispatch without staging anything
-	req->area = currentStagingArea;
-	req->submitInputs = currentStagingInputs;
+	const unsigned areaIdx = currentStagingArea;
+	auto& area = staging[areaIdx];
+	const unsigned submit = currentStagingInputs;
 
 	stagingActiveCount_inc();
-	staging[currentStagingArea].setIsActive(true);
+	area.setIsActive(true);
 	statBatchesStarted++;
 	currentStagingInputs = 0;
 	if(++currentStagingArea == staging.size())
 		currentStagingArea = 0;
 
-	transferThread.send(req);
+	// No slice to stage; releasing the batch-open token dispatches once the
+	// already-queued slices have finished.
+	area.submitCount.store(submit, std::memory_order_release);
+	releaseStageToken(areaIdx);
 }
 
 // ---- output --------------------------------------------------------------
 
 FUTURE_RETURN_BOOL_T PAR2ProcMetal::getOutput(unsigned index, void* output) {
 	MetalTransferReq* req = new MetalTransferReq();
-	req->finish = true;
+	req->kind = METAL_REQ_READBACK;
 	req->parent = this;
 	req->impl = impl.get();
 	req->gf = gf.get();
@@ -498,6 +667,6 @@ FUTURE_RETURN_BOOL_T PAR2ProcMetal::getOutput(unsigned index, void* output) {
 	req->outputOffset = (size_t)index * sliceSizeAligned;
 
 	auto future = req->promOut.get_future();
-	transferThread.send(req);
+	sendToTransfer(req);
 	return future;
 }

@@ -262,7 +262,7 @@ Result Par2Repairer::Process(
         IPAR2ProcBackend *backend = &parparcpu;
         if (gpudevice != GPU_DEVICE_OFF)
         {
-          gpubackend.reset(gpu_create_backend(gpudevice, chunksize, inputbatch, &gpuname));
+          gpubackend.reset(gpu_create_backend(gpudevice, chunksize, inputbatch, (int)nthreads, &gpuname));
           if (gpubackend)
             backend = gpubackend.get();
           else if (gpudevice >= 0)

@@ -47,7 +47,8 @@ int gpu_default_device() {
 }
 
 IPAR2ProcBackend* gpu_create_backend(int deviceId, size_t sliceSize,
-                                     unsigned inputGrouping, std::string* nameOut) {
+                                     unsigned inputGrouping, int numThreads,
+                                     std::string* nameOut) {
 	if(deviceId < 0) {
 		deviceId = gpu_default_device();
 		if(deviceId < 0) return nullptr;
@@ -70,6 +71,7 @@ IPAR2ProcBackend* gpu_create_backend(int deviceId, size_t sliceSize,
 		PAR2ProcMetal* be = new PAR2ProcMetal(apiIndex);
 		if(!be->isAvailable()) { delete be; return nullptr; }
 		be->setSliceSize(sliceSize);
+		be->setNumThreads(numThreads);
 		if(!be->init(inputGrouping)) { delete be; return nullptr; }
 		if(nameOut) *nameOut = info.name + " (" + be->getMethodName() + ")";
 		return be;
