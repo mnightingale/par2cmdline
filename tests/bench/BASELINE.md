@@ -55,6 +55,32 @@ The Metal backend is worth building for macOS coverage and because it proves the
 whole integration path, but the headline performance result should be expected
 to come from Vulkan on discrete hardware.
 
+## Measured Metal kernel throughput
+
+Raw `gf16_muladd` dispatch, 200 output slices, 1 MiB chunks, best of 5. This is
+kernel time only — it excludes host transfer and checksum cost, so end-to-end
+repair will be lower.
+
+| Inputs per batch | Outputs per group | GF16 GB/s |
+| --- | --- | --- |
+| 8 | 8 | 182.5 |
+| 16 | 4 | 185.7 |
+| 16 | 8 | 186.9 |
+| 32 | 4 | **189.3** |
+
+**189 GB/s against the CPU's 103 GB/s — 1.84x**, which is essentially the
+predicted ceiling: the kernel is saturating the machine's ~200 GB/s unified
+memory. Spread across the tuning grid is only ~5%, confirming the kernel is
+bandwidth-bound rather than ALU-bound, so there is little headroom left here.
+Outputs-per-group of 4 or more is the sweet spot; below that, each input read
+serves too few outputs.
+
+Correctness was established first, against an independent scalar GF(2^16)
+oracle (not ParPar's own implementation, which would only prove
+self-consistency): 160 shape combinations covering input batches of 1–16,
+output counts that do and do not divide the group size, slice lengths from 1 to
+257 vectors, and both accumulate and overwrite modes — all bit-exact.
+
 ## Metal device capabilities (M2 Pro)
 
 Probed via `MTLCopyAllDevices`; relevant to kernel design:
