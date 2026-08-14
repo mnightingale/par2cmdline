@@ -38,7 +38,8 @@ if ($Clean) {
         "criticalpacket_test",
         "reedsolomon_test",
         "galois_test",
-        "utf8_test"
+        "utf8_test",
+        "gpu_test"
     )
     $ObjDir = Join-Path $script:RootDir "tests\$Platform\$Configuration"
     foreach ($exe in $testExes) {

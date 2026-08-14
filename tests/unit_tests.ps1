@@ -47,7 +47,8 @@ $unitTestExes = @(
     "criticalpacket_test.exe",
     "reedsolomon_test.exe",
     "galois_test.exe",
-    "utf8_test.exe"
+    "utf8_test.exe",
+    "gpu_test.exe"
 )
 
 $passed = 0
