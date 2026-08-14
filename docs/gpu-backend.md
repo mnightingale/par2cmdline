@@ -41,7 +41,13 @@ and at 10 GiB the scan is 9.72 s of the 21.17 s total. Dividing *total* repair
 time by GF16 work charges the scan to the compute and understates CPU
 throughput by ~1.8x.
 
-**Always** isolate the phases:
+**Always** isolate the phases. The harness does it for you:
+
+```bash
+python3 tests/bench/parbench.py --size 10G --repeat 3 --phase-split
+```
+
+which is the automated form of:
 
 ```bash
 par2 verify -q bench.par2          # scan alone
@@ -74,18 +80,33 @@ bytes = source_blocks × blocks_reconstructed × block_size
 
 The Apple result is about *bandwidth ratio*, not about GPU versus CPU compute.
 Apple Silicon is the worst case: one memory pool shared by both processors, so
-the ratio is 1:1 and there is nothing to win. A discrete GPU changes that:
+the ratio is 1:1 and there is nothing to win. A discrete GPU changes that.
+
+**The Windows CPU baseline has now been measured** (Ryzen 7 5800X, 8c/16t,
+DDR4-3600; RTX 4070 Ti). Full numbers in `tests/bench/BASELINE.md`, machine B:
 
 | | Bandwidth |
 | --- | --- |
 | M2 Pro, shared | ~200 GB/s |
 | **RTX 4070 Ti** | **~504 GB/s** |
-| Typical desktop CPU | ~50–90 GB/s |
+| **This CPU, measured GF16** | **107 GB/s** |
 
-So expect the reconstruct phase to be roughly **5–7x** faster than that
-machine's CPU — but *measure the CPU on that machine first*, do not reuse any
-number from this document. The scan phase does not accelerate at all, so
-end-to-end gains will be smaller, and smaller again in `corrupt` mode.
+The earlier "typical desktop CPU ~50–90 GB/s" guess in this section was low:
+the reconstruct loop re-reads inputs out of cache, not DRAM, so it runs well
+above the 57.6 GB/s the memory controller could sustain. That revises the
+expected reconstruct-phase speedup **down from 5–7x to a ceiling of ~4.7x**
+(504/107), before staging and readback are paid for.
+
+End-to-end is bounded far harder, because the scan does not accelerate:
+
+| Mode | Repair (CPU) | of which scan | Best possible end-to-end |
+| --- | --- | --- | --- |
+| delete | 29.72 s | 9.60 s | 3.10x (infinitely fast GPU) |
+| corrupt | 56.97 s | 27.22 s | 2.09x (infinitely fast GPU) |
+
+At a realistic 4.7x on the reconstruct phase that becomes ~2.14x and ~1.69x.
+**Treat any end-to-end result much above 2x on this machine as suspect**, most
+likely the scan being excluded from one side of the comparison.
 
 ### What differs from Apple, and matters
 
@@ -211,22 +232,42 @@ These cost real debugging time. Do not rediscover them.
 Windows uses MSVC project files, **not** autotools:
 
 ```bash
-msbuild -property:PlatformToolset=ClangCL -property:Configuration=Release -property:Platform=x64 par2cmdline.sln
-msbuild -property:Configuration=UnitTests-Release -property:Platform=x64 par2cmdline.sln
+msbuild -property:PlatformToolset=v145 -property:Configuration=Release -property:Platform=x64 par2cmdline.sln
+msbuild -property:PlatformToolset=v145 -property:Configuration=UnitTests-Release -property:Platform=x64 par2cmdline.sln
 ```
 
 ```bash
 .\tests\run_tests.ps1 -Par2Binary ".\x64\Release\par2.exe"
+.\tests\unit_tests.ps1
 ```
 
-Already done for you: `gpu_device.cpp/.h` added to `parpar/gf16.vcxproj`, and
-`PARPAR_GPU_SUPPORT` added to its preprocessor definitions (all seven
-`gf16_cksum_*.c` sources were already listed, so this links).
+**The `PlatformToolset` override is not optional.** `parpar/gf16.vcxproj` and
+`parpar/hasher.vcxproj` are upstream ParPar files and pin `v143`; every
+par2cmdline project pins `v145`. Whichever toolset the machine actually has,
+both halves must be forced onto it or the build dies with MSB8020 on the two
+parpar projects only. On the benchmark machine (VS 18 Community) only `v145` is
+installed — neither `v143` nor `ClangCL` — so `v145` is what the commands above
+use. Do **not** "fix" this by editing the pin inside `parpar/`: those files go
+upstream. `v145` compiles the SIMD sources fine; the `-mavx2`-style
+`AdditionalOptions` in those projects are all conditioned on `ClangCL` and are
+simply skipped.
 
-**Still needed:** `src/gpu_test.cpp` has no `tests/gpu_test.vcxproj` and is not
-in `par2cmdline.sln`, so the correctness test will not run on Windows until one
-is added. Copy `tests/galois_test.vcxproj` as the template. Do this early — it
-is the test that catches GF16 errors.
+Already done for you:
+
+- `gpu_device.cpp/.h` added to `parpar/gf16.vcxproj`, and `PARPAR_GPU_SUPPORT`
+  added to its preprocessor definitions (all seven `gf16_cksum_*.c` sources
+  were already listed, so this links).
+- `tests/gpu_test.vcxproj` exists, is in `par2cmdline.sln` under the `tests`
+  folder, and is listed in `tests/build_unit_tests.ps1` and
+  `tests/unit_tests.ps1`. It builds only in the `UnitTests-*` configurations,
+  matching the other test projects. It compiles with
+  `PARPAR_INVERT_SUPPORT;PARPAR_SLIM_GF16;PARPAR_GPU_SUPPORT` so that the
+  headers it shares with `parpar/gf16.vcxproj` agree — `libpar2.vcxproj` sets
+  none of these, which is safe there only because `PAR2ProcCPU` holds
+  `Galois16Mul` behind a pointer. **Add `PARPAR_VULKAN_SUPPORT` there too when
+  the backend lands**, and widen the `#ifdef PARPAR_METAL_SUPPORT` guards in
+  `src/gpu_test.cpp` — as shipped it compiles and reports
+  `SKIP: built without GPU backend support` on Windows.
 
 ---
 
@@ -251,7 +292,17 @@ par2 create --gpu=off  ... && par2 repair --gpu=auto ...   # verify hashes
 par2 create --gpu=auto ... && par2 repair --gpu=off  ...   # verify hashes
 
 # 5. Only now, measure. CPU first, on this machine.
-python3 tests/bench/parbench.py --size 10G --repeat 3 --backend cpu --backend gpu
+#    --phase-split is required for any GB/s figure: without it the scan is
+#    charged to the compute. See §2.
+python3 tests/bench/parbench.py --size 10G --repeat 3 --phase-split \
+        --backend cpu --backend gpu
+```
+
+On Windows, steps 1 and 2 are:
+
+```bash
+.\x64\Release\gpu_test.exe
+.\tests\unit_tests.ps1
 ```
 
 The harness verifies every repair by SHA-256 against the original corpus and
@@ -264,7 +315,10 @@ CPU-bound scan. Report both; either alone misleads.
 ## 8. Open items
 
 - Vulkan backend (this handoff).
-- `tests/gpu_test.vcxproj` for the Windows build.
+- ~~`tests/gpu_test.vcxproj` for the Windows build.~~ Done — see §6.
+- ~~Windows CPU baseline.~~ Done — see §3 and `tests/bench/BASELINE.md`.
+- ~~A `--phase-split` mode for `parbench.py`.~~ Done — the scan-subtraction in
+  §2 is now in the harness rather than done by hand.
 - Hybrid CPU+GPU split. `PAR2Proc` already supports it —
   `init()` takes `{backend, offset, size}` entries and
   `setCurrentSliceSize(size, sizeAlloc)` sets the split. Offsets must be
