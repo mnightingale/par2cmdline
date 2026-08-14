@@ -232,7 +232,10 @@ public:
 	Galois16MulUntransformPackedCksum finish_packed_cksum;
 	Galois16MulUntransformPackedCksumPartial finish_partial_packsum;
 	Galois16AddPackPfFunc add_multi_packpf;
-#ifdef PARPAR_OPENCL_SUPPORT
+// these guard the unpacked copy-with-checksum helpers used by GPU backends;
+// PARPAR_OPENCL_SUPPORT is the historical name for what is really a generic
+// GPU-support flag, so either spelling enables them
+#if defined(PARPAR_GPU_SUPPORT) || defined(PARPAR_OPENCL_SUPPORT)
 	Galois16CopyCksum copy_cksum;
 	Galois16CopyCksumCheck copy_cksum_check;
 	Galois16UngrpCksumCheck finish_grp2_cksum;

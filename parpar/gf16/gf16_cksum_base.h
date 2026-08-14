@@ -1,5 +1,5 @@
 
-#ifdef PARPAR_OPENCL_SUPPORT
+#if defined(PARPAR_GPU_SUPPORT) || defined(PARPAR_OPENCL_SUPPORT)
 
 #include <string.h>
 #include "gf16_global.h"
@@ -127,4 +127,4 @@ int _FN(gf16_grp2_finish)(void *HEDLEY_RESTRICT dst, const void *HEDLEY_RESTRICT
 }
 #endif
 
-#endif // defined(PARPAR_OPENCL_SUPPORT)
+#endif // defined(PARPAR_GPU_SUPPORT) || defined(PARPAR_OPENCL_SUPPORT)

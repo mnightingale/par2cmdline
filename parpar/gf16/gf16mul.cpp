@@ -536,7 +536,8 @@ void Galois16Mul::setupMethod(Galois16Methods _method) {
 	#else
 		#define SET_BASIC_OP(var, fn) (void)0
 	#endif
-	#ifdef PARPAR_OPENCL_SUPPORT
+	// name kept for diff stability; this covers all GPU backends, not just OpenCL
+	#if defined(PARPAR_GPU_SUPPORT) || defined(PARPAR_OPENCL_SUPPORT)
 		#define SET_FOR_OPENCL(var, fn) var = &fn
 	#else
 		#define SET_FOR_OPENCL(var, fn) (void)0
@@ -1410,7 +1411,7 @@ Galois16Mul::Galois16Mul(Galois16Methods method) {
 #endif
 	_mul_add_multi_packed = NULL;
 	_mul_add_multi_packpf = NULL;
-#ifdef PARPAR_OPENCL_SUPPORT
+#if defined(PARPAR_GPU_SUPPORT) || defined(PARPAR_OPENCL_SUPPORT)
 	copy_cksum = &gf16_cksum_copy_generic;
 	copy_cksum_check = &gf16_cksum_copy_check_generic;
 	finish_grp2_cksum = &gf16_grp2_finish_generic;
@@ -1464,7 +1465,7 @@ void Galois16Mul::move(Galois16Mul& other) {
 	_pow = other._pow;
 	_pow_add = other._pow_add;
 #endif
-#ifdef PARPAR_OPENCL_SUPPORT
+#if defined(PARPAR_GPU_SUPPORT) || defined(PARPAR_OPENCL_SUPPORT)
 	copy_cksum = other.copy_cksum;
 	copy_cksum_check = other.copy_cksum_check;
 	finish_grp2_cksum = other.finish_grp2_cksum;
