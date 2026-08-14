@@ -382,6 +382,7 @@ EXTRA_DIST = \
 	tests/bug190.tar.gz \
 	tests/block-count-wrap.tar.gz \
 	tests/generate-block-count-wrap-fixture.py \
+	docs/gpu-backend.md \
 	tests/bench/parbench.py \
 	tests/bench/BASELINE.md \
 	tests/bench/README.md \
