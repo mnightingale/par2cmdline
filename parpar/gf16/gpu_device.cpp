@@ -1,7 +1,9 @@
 #include "gpu_device.h"
+#include "controller.h"
 
 #ifdef PARPAR_METAL_SUPPORT
 # include "gpu_device_metal.h"
+# include "controller_metal.h"
 #endif
 #ifdef PARPAR_VULKAN_SUPPORT
 # include "gpu_device_vulkan.h"
@@ -42,4 +44,38 @@ int gpu_default_device() {
 		}
 	}
 	return best;
+}
+
+IPAR2ProcBackend* gpu_create_backend(int deviceId, size_t sliceSize,
+                                     unsigned inputGrouping, std::string* nameOut) {
+	if(deviceId < 0) {
+		deviceId = gpu_default_device();
+		if(deviceId < 0) return nullptr;
+	}
+
+	auto devices = gpu_enumerate_devices();
+	if(deviceId >= (int)devices.size()) return nullptr;
+	const GPUDeviceInfo& info = devices[deviceId];
+	if(!info.available || !info.supported) return nullptr;
+
+	switch(info.api) {
+#ifdef PARPAR_METAL_SUPPORT
+	case GPU_API_METAL: {
+		// Devices are numbered across all APIs, so translate back to this
+		// backend's own index before constructing.
+		int apiIndex = 0;
+		for(int i = 0; i < deviceId; i++)
+			if(devices[i].api == GPU_API_METAL) apiIndex++;
+
+		PAR2ProcMetal* be = new PAR2ProcMetal(apiIndex);
+		if(!be->isAvailable()) { delete be; return nullptr; }
+		be->setSliceSize(sliceSize);
+		if(!be->init(inputGrouping)) { delete be; return nullptr; }
+		if(nameOut) *nameOut = info.name + " (" + be->getMethodName() + ")";
+		return be;
+	}
+#endif
+	default:
+		return nullptr;
+	}
 }

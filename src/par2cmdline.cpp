@@ -93,7 +93,8 @@ int main(int argc, char* argv[])
 			    commandline->GetFirstRecoveryBlock(),
 			    commandline->GetRecoveryFileScheme(),
 			    commandline->GetRecoveryFileCount(),
-			    commandline->GetRecoveryBlockCount()
+			    commandline->GetRecoveryBlockCount(),
+			    commandline->GetGpuDevice()
 			    );
 
         break;
@@ -129,7 +130,8 @@ int main(int argc, char* argv[])
 				  commandline->GetPurgeFiles(),
 				  commandline->GetRenameOnly(),
 				  commandline->GetSkipData(),
-				  commandline->GetSkipLeaway());
+				  commandline->GetSkipLeaway(),
+				  commandline->GetGpuDevice());
               break;
 	    default:
               break;

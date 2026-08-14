@@ -100,6 +100,7 @@ public:
   bool                                GetSkipData(void) const    {return skipdata;}
   u64                                 GetSkipLeaway(void) const  {return skipleaway;}
   u32                                 GetNumThreads(void) {return nthreads;}
+  int                                 GetGpuDevice(void) {return gpudevice;}
   u32                                 GetFileThreads(void) {return filethreads;}
 
 
@@ -144,6 +145,7 @@ protected:
                                // for the output buffer when creating
                                // or repairing.
   std::string basepath;             // the path par2 is run from
+  int gpudevice;        // GPU selection: GPU_DEVICE_AUTO/OFF, or a device id
   u32 nthreads;         // Default number of threads
   u32 filethreads;      // Number of threads for file processing
   // NOTE: using the "-t" option to set the number of threads does not

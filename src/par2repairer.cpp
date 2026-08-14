@@ -124,7 +124,8 @@ Result Par2Repairer::Process(
 			     const bool purgefiles,
 			     const bool renameonly,
 			     const bool _skipdata,
-			     const u64 _skipleaway
+			     const u64 _skipleaway,
+			     const int gpudevice
 			     )
 {
   filethreads = _filethreads;
@@ -250,21 +251,44 @@ Result Par2Repairer::Process(
           return eMemoryError;
         }
 
-        // Init ParPar backend
-        if (!parpar.init(chunksize, {{&parparcpu, 0, (size_t)chunksize}}))
-        {
-          DeleteIncompleteTargetFiles();
-          return eLogicError;
-        }
-        if (nthreads != 0)
-          parparcpu.setNumThreads(nthreads);
-
         // If there aren't many input blocks, restrict the submission batch size
         u32 inputbatch = 0;
         if (sourceblockcount < NUM_PARPAR_BUFFERS*2)
           inputbatch = (sourceblockcount + 1) / 2;
 
-        if (!parparcpu.init(GF16_AUTO, inputbatch) || !parpar.setRecoverySlices(missingblockcount))
+        // Try the GPU first when asked for; a GPU is never required, so any
+        // failure here simply leaves the CPU backend in place.
+        std::string gpuname;
+        IPAR2ProcBackend *backend = &parparcpu;
+        if (gpudevice != GPU_DEVICE_OFF)
+        {
+          gpubackend.reset(gpu_create_backend(gpudevice, chunksize, inputbatch, &gpuname));
+          if (gpubackend)
+            backend = gpubackend.get();
+          else if (gpudevice >= 0)
+          {
+            serr << "Could not use GPU device " << gpudevice
+              << "; falling back to the CPU backend." << std::endl;
+          }
+        }
+
+        // Init ParPar backend
+        if (!parpar.init(chunksize, {{backend, 0, (size_t)chunksize}}))
+        {
+          DeleteIncompleteTargetFiles();
+          return eLogicError;
+        }
+        if (!gpubackend)
+        {
+          if (nthreads != 0)
+            parparcpu.setNumThreads(nthreads);
+          if (!parparcpu.init(GF16_AUTO, inputbatch))
+          {
+            DeleteIncompleteTargetFiles();
+            return eMemoryError;
+          }
+        }
+        if (!parpar.setRecoverySlices(missingblockcount))
         {
           DeleteIncompleteTargetFiles();
           return eMemoryError;
@@ -272,11 +296,16 @@ Result Par2Repairer::Process(
 
         if (noiselevel >= nlNoisy)
         {
-          sout << "Multiply method: " << parparcpu.getMethodName() << '\n';
-          if (noiselevel >= nlDebug)
+          if (gpubackend)
+            sout << "Multiply method: " << gpuname << '\n';
+          else
           {
-            sout << "[DEBUG] Compute tile size: " << parparcpu.getChunkLen()
-              << "\n[DEBUG] Compute block grouping: " << parparcpu.getInputBatchSize() << '\n';
+            sout << "Multiply method: " << parparcpu.getMethodName() << '\n';
+            if (noiselevel >= nlDebug)
+            {
+              sout << "[DEBUG] Compute tile size: " << parparcpu.getChunkLen()
+                << "\n[DEBUG] Compute block grouping: " << parparcpu.getInputBatchSize() << '\n';
+            }
           }
           sout << std::endl;
         }

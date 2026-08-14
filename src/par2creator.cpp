@@ -94,7 +94,8 @@ Result Par2Creator::Process(
 			    const u32 _firstblock,
 			    const Scheme _recoveryfilescheme,
 			    const u32 _recoveryfilecount,
-			    const u32 _recoveryblockcount)
+			    const u32 _recoveryblockcount,
+			    const int gpudevice)
 {
   filethreads = _filethreads;
 
@@ -133,18 +134,35 @@ Result Par2Creator::Process(
   if (recoveryblockcount > 0 && noiselevel >= nlDebug)
     sout << "[DEBUG] Process chunk size: " << chunksize << std::endl;
 
-  // Init ParPar backend
-  if (!parpar.init(chunksize, {{&parparcpu, 0, (size_t)chunksize}}))
-    return eLogicError;
-  if (nthreads != 0)
-    parparcpu.setNumThreads(nthreads);
-
   // If there aren't many input blocks, restrict the submission batch size
   u32 inputbatch = 0;
   if (sourceblockcount < NUM_PARPAR_BUFFERS*2)
     inputbatch = (sourceblockcount + 1) / 2;
-  if (!parparcpu.init(GF16_AUTO, inputbatch))
-    return eMemoryError;
+
+  // Try the GPU first when asked for; a GPU is never required, so any failure
+  // here simply leaves the CPU backend in place.
+  std::string gpuname;
+  IPAR2ProcBackend *backend = &parparcpu;
+  if (gpudevice != GPU_DEVICE_OFF)
+  {
+    gpubackend.reset(gpu_create_backend(gpudevice, chunksize, inputbatch, &gpuname));
+    if (gpubackend)
+      backend = gpubackend.get();
+    else if (gpudevice >= 0)
+      serr << "Could not use GPU device " << gpudevice
+        << "; falling back to the CPU backend." << std::endl;
+  }
+
+  // Init ParPar backend
+  if (!parpar.init(chunksize, {{backend, 0, (size_t)chunksize}}))
+    return eLogicError;
+  if (!gpubackend)
+  {
+    if (nthreads != 0)
+      parparcpu.setNumThreads(nthreads);
+    if (!parparcpu.init(GF16_AUTO, inputbatch))
+      return eMemoryError;
+  }
 
   if (noiselevel > nlQuiet)
   {
@@ -157,8 +175,9 @@ Result Par2Creator::Process(
     if (noiselevel >= nlNoisy)
     {
       sout << "Data hash method: " << hasherInput_methodName()
-        << "\nMultiply method: " << parparcpu.getMethodName() << '\n';
-      if (noiselevel >= nlDebug)
+        << "\nMultiply method: "
+        << (gpubackend ? gpuname : std::string(parparcpu.getMethodName())) << '\n';
+      if (!gpubackend && noiselevel >= nlDebug)
       {
         sout << "[DEBUG] Compute tile size: " << parparcpu.getChunkLen()
           << "\n[DEBUG] Compute block grouping: " << parparcpu.getInputBatchSize() << '\n';

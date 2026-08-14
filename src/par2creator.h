@@ -22,6 +22,7 @@
 #define __PAR2CREATOR_H__
 
 #include "../parpar/gf16/controller_cpu.h"
+#include "../parpar/gf16/gpu_device.h"
 
 class MainPacket;
 class CreatorPacket;
@@ -45,7 +46,8 @@ public:
 		 const u32 firstblock,
 		 const Scheme recoveryfilescheme,
 		 const u32 recoveryfilecount,
-		 const u32 recoveryblockcount
+		 const u32 recoveryblockcount,
+		 const int gpudevice
 		 );
 
 protected:
@@ -148,6 +150,7 @@ protected:
 
   PAR2Proc parpar;            // Main ParPar backend
   PAR2ProcCPU parparcpu;      // ParPar CPU sub-backend
+  std::unique_ptr<IPAR2ProcBackend> gpubackend; // GPU sub-backend, when in use
 
   bool deferhashcomputation; // If we have enough memory to compute all recovery data
                              // in one pass, then we can defer the computation of

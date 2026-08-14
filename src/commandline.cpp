@@ -43,6 +43,7 @@ CommandLine::CommandLine(void)
 , noiselevel(nlUnknown)
 , memorylimit(0)
 , basepath()
+, gpudevice(GPU_DEVICE_AUTO)
 , nthreads(0) // 0 means use default number
 , filethreads( _FILE_THREADS ) // default from header file
 , parfilename()
@@ -147,6 +148,8 @@ void CommandLine::usage(void)
     "  -q [-q]  : Be more quiet (-q -q gives silence)\n"
     "  -m<n>    : Memory (in MB) to use (default is half of total physical memory)\n";
   std::cout <<
+    "  --gpu=<d>: GPU to use for processing: auto (default), off, or a device\n"
+    "             id from --list-gpus\n"
     "  -t<n>    : Number of threads used for main processing (" << std::thread::hardware_concurrency() << " detected)\n"
     "  -T<n>    : Number of files hashed in parallel\n"
     "             (" << _FILE_THREADS << " are the default)\n";
@@ -875,6 +878,31 @@ bool CommandLine::ReadArgs(int argc, const char * const *argv)
 
         case '-':
           {
+            const std::string arg = argv[0];
+            if (arg.compare(0, 6, "--gpu=") == 0)
+            {
+              const std::string val = arg.substr(6);
+              if (val == "auto")
+                gpudevice = GPU_DEVICE_AUTO;
+              else if (val == "off" || val == "none")
+                gpudevice = GPU_DEVICE_OFF;
+              else
+              {
+                char *end = NULL;
+                long id = strtol(val.c_str(), &end, 10);
+                if (val.empty() || *end || id < 0)
+                {
+                  std::cerr << "Invalid GPU device: " << val << std::endl;
+                  std::cerr << "  (Expected auto, off, or a device id from --list-gpus.)" << std::endl;
+                  return false;
+                }
+                gpudevice = (int)id;
+              }
+              argc--;
+              argv++;
+              continue;
+            }
+
 	    if (argv[0] != std::string("--")) {
               std::cerr << "Unknown option: " << argv[0] << std::endl;
 	      std::cerr << "  (Options must appear after create, repair or verify.)" << std::endl;

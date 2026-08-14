@@ -161,6 +161,13 @@ typedef enum Result
 } Result;
 
 
+// GPU device selection for the GF16 computation. Any value >= 0 selects that
+// device id as reported by gpu_enumerate_devices(). A GPU is never required:
+// AUTO falls back to the CPU backend when no usable device is present.
+static const int GPU_DEVICE_AUTO = -1;
+static const int GPU_DEVICE_OFF = -2;
+
+
 Result par2create(std::ostream &sout,
 			  std::ostream &serr,
 			  const NoiseLevel noiselevel,
@@ -174,7 +181,8 @@ Result par2create(std::ostream &sout,
 			  const u32 firstblock,
 			  const Scheme recoveryfilescheme,
 			  const u32 recoveryfilecount,
-			  const u32 recoveryblockcount
+			  const u32 recoveryblockcount,
+			  const int gpudevice = GPU_DEVICE_AUTO
 			  );
 
 
@@ -191,7 +199,8 @@ Result par2repair(std::ostream &sout,
 		  const bool purgefiles,
 		  const bool renameonly,
 		  const bool skipdata,
-		  const u64 skipleaway
+		  const u64 skipleaway,
+		  const int gpudevice = GPU_DEVICE_AUTO
 		  );
 
 

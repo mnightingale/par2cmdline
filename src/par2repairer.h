@@ -22,6 +22,7 @@
 #define __PAR2REPAIRER_H__
 
 #include "../parpar/gf16/controller_cpu.h"
+#include "../parpar/gf16/gpu_device.h"
 #ifndef PARPAR_INVERT_SUPPORT
 # define PARPAR_INVERT_SUPPORT 1
 #endif
@@ -46,7 +47,8 @@ public:
 		 const bool purgefiles,
 		 const bool renameonly,
 		 const bool skipdata,
-		 const u64 skipleaway
+		 const u64 skipleaway,
+		 const int gpudevice
 		 );
 
 protected:
@@ -209,6 +211,7 @@ protected:
   Galois16RecMatrix         rs;                      // The Reed Solomon matrix.
   PAR2Proc parpar;                                   // Main ParPar backend
   PAR2ProcCPU parparcpu;                             // ParPar CPU sub-backend
+  std::unique_ptr<IPAR2ProcBackend> gpubackend;      // GPU sub-backend, when in use
 
   void                     *transferbuffer;          // Buffer for reading/writing DataBlocks (chunksize * num_transfer_buffers)
 };

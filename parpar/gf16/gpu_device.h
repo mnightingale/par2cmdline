@@ -61,4 +61,18 @@ std::vector<GPUDeviceInfo> gpu_enumerate_devices();
 // --gpu=auto, or -1 if none is suitable.
 int gpu_default_device();
 
+class IPAR2ProcBackend;
+
+// Creates and fully initialises a GPU backend, ready for setRecoverySlices().
+// Pass deviceId < 0 to take the automatic choice.
+//
+// Returns nullptr whenever a GPU cannot be used - no backend compiled in, no
+// device, or the requested slice geometry exceeding what the device can
+// allocate. That is a normal outcome, not an error: callers fall back to the
+// CPU backend. On success, `nameOut` (when given) receives a description
+// suitable for reporting to the user, and the caller owns the returned object.
+IPAR2ProcBackend* gpu_create_backend(int deviceId, size_t sliceSize,
+                                     unsigned inputGrouping,
+                                     std::string* nameOut = nullptr);
+
 #endif // defined(__GF16_GPU_DEVICE_H)

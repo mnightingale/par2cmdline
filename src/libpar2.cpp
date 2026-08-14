@@ -32,7 +32,8 @@ Result par2create(std::ostream &sout,
 		  const u32 firstblock,
 		  const Scheme recoveryfilescheme,
 		  const u32 recoveryfilecount,
-		  const u32 recoveryblockcount
+		  const u32 recoveryblockcount,
+		  const int gpudevice
 		  )
 {
   Par2Creator creator(sout, serr, noiselevel);
@@ -47,7 +48,8 @@ Result par2create(std::ostream &sout,
 				  firstblock,
 				  recoveryfilescheme,
 				  recoveryfilecount,
-				  recoveryblockcount
+				  recoveryblockcount,
+				  gpudevice
 				  );
   return result;
 }
@@ -66,7 +68,8 @@ Result par2repair(std::ostream &sout,
 		  const bool purgefiles,
 		  const bool renameonly,
 		  const bool skipdata,
-		  const u64 skipleaway
+		  const u64 skipleaway,
+		  const int gpudevice
 		  )
 {
   Par2Repairer repairer(sout, serr, noiselevel);
@@ -81,7 +84,8 @@ Result par2repair(std::ostream &sout,
 				   purgefiles,
 				   renameonly,
 				   skipdata,
-				   skipleaway);
+				   skipleaway,
+				   gpudevice);
 
   return result;
 }
