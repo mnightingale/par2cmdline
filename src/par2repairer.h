@@ -49,6 +49,21 @@ protected:
 
   // Load packets from the specified file
   bool LoadPacketsFromFile(std::string filename);
+  void Report(ProgressMeter<u64> &progress, u64 &remaining, u64 amount);
+  bool VerifyPacketHash(DiskFile *diskfile, u64 offset,
+                        const PACKET_HEADER &header,
+                        u8 *buffer, size_t buffersize,
+                        ProgressMeter<u64> &progress, u64 reportable);
+  bool VerifyAndDispatchPackets(DiskFile *diskfile,
+                                std::vector<u64> &pktOffset,
+                                std::vector<PACKET_HEADER> &pktHeader,
+                                std::vector<u64> &pktReportable,
+                                std::map<u64, bool> &pktVerified,
+                                u32 &packets, u32 &recoverypackets,
+                                ProgressMeter<u64> &progress,
+                                u64 &resumeOffset);
+  void DispatchPacket(DiskFile *diskfile, u64 offset, PACKET_HEADER &header,
+                      u32 &packets, u32 &recoverypackets);
   // Finish loading a recovery packet
   bool LoadRecoveryPacket(DiskFile *diskfile, u64 offset, PACKET_HEADER &header);
   // Finish loading a file description packet
