@@ -348,6 +348,9 @@ EXTRA_DIST = \
 	tests/bug190.tar.gz \
 	tests/block-count-wrap.tar.gz \
 	tests/generate-block-count-wrap-fixture.py \
+	tests/bench/parbench.py \
+	tests/bench/BASELINE.md \
+	tests/bench/README.md \
 	tests/flatdata-filelist.txt \
 	tests/subdirdata-filelist.txt \
 	tests/subdirdata-partial-filelist.txt \
