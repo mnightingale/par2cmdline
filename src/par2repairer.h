@@ -54,6 +54,16 @@ protected:
 
   // Load packets from the specified file
   bool LoadPacketsFromFile(std::string filename);
+  bool VerifyPacketHash(const std::string &filename, u64 offset,
+                        const PACKET_HEADER &header);
+  bool VerifyAndDispatchPackets(DiskFile *diskfile, const std::string &filename,
+                                std::vector<u64> &pktOffset,
+                                std::vector<PACKET_HEADER> &pktHeader,
+                                std::map<u64, bool> &pktVerified,
+                                u32 &packets, u32 &recoverypackets,
+                                u64 &resumeOffset);
+  void DispatchPacket(DiskFile *diskfile, u64 offset, PACKET_HEADER &header,
+                      u32 &packets, u32 &recoverypackets);
   // Finish loading a recovery packet
   bool LoadRecoveryPacket(DiskFile *diskfile, u64 offset, PACKET_HEADER &header);
   // Finish loading a file description packet

@@ -395,12 +395,33 @@ bool Par2Repairer::LoadPacketsFromFile(std::string filename)
     // Progress indicator
     ProgressMeter<u64> progress(sout, "Loading: ", filesize);
 
+    // On a hash mismatch the batch is truncated and scanning resumes one byte
+    // past the failed packet; results are cached by offset so packets are not
+    // hashed twice.
+    std::vector<u64> pktOffset;
+    std::vector<PACKET_HEADER> pktHeader;
+    std::map<u64, bool> pktVerified;
+    const size_t maxbatch = 1024;
+
     // Start at the beginning of the file
     u64 offset = 0;
 
     // Continue as long as there is at least enough for the packet header
-    while (offset + sizeof(PACKET_HEADER) <= filesize)
+    while (offset + sizeof(PACKET_HEADER) <= filesize || !pktOffset.empty())
     {
+      if (pktOffset.size() >= maxbatch
+          || offset + sizeof(PACKET_HEADER) > filesize)
+      {
+        u64 resume = 0;
+        if (!VerifyAndDispatchPackets(diskfile, filename, pktOffset, pktHeader,
+                                      pktVerified, packets, recoverypackets,
+                                      resume))
+        {
+          offset = resume;
+        }
+        continue;
+      }
+
       if (noiselevel > nlQuiet)
         progress.Update(offset);
 
@@ -464,89 +485,8 @@ bool Par2Repairer::LoadPacketsFromFile(std::string filename)
         continue;
       }
 
-      // Compute the MD5 Hash of the packet
-      MD5Context context;
-      context.Update(&header.setid, sizeof(header)-offsetof(PACKET_HEADER, setid));
-
-      // How much more do I need to read to get the whole packet
-      u64 current = offset+sizeof(PACKET_HEADER);
-      u64 limit = offset+header.length;
-      while (current < limit)
-      {
-        size_t want = (size_t)std::min((u64)buffersize, limit-current);
-
-        if (!diskfile->Read(current, buffer, want))
-          break;
-
-        context.Update(buffer, want);
-
-        current += want;
-      }
-
-      // Did the whole packet get processed
-      if (current<limit)
-      {
-        offset++;
-        continue;
-      }
-
-      // Check the calculated packet hash against the value in the header
-      MD5Hash hash;
-      context.Final(hash);
-      if (hash != header.hash)
-      {
-        offset++;
-        continue;
-      }
-
-      // If this is the first packet that we have found then record the setid
-      if (firstpacket)
-      {
-        setid = header.setid;
-        firstpacket = false;
-      }
-
-      // Is the packet from the correct set
-      if (setid == header.setid)
-      {
-        // Is it a packet type that we are interested in
-        if (recoveryblockpacket_type == header.type)
-        {
-          if (LoadRecoveryPacket(diskfile, offset, header))
-          {
-            recoverypackets++;
-            packets++;
-          }
-        }
-        else if (fileverificationpacket_type == header.type)
-        {
-          if (LoadVerificationPacket(diskfile, offset, header))
-          {
-            packets++;
-          }
-        }
-        else if (filedescriptionpacket_type == header.type)
-        {
-          if (LoadDescriptionPacket(diskfile, offset, header))
-          {
-            packets++;
-          }
-        }
-        else if (mainpacket_type == header.type)
-        {
-          if (LoadMainPacket(diskfile, offset, header))
-          {
-            packets++;
-          }
-        }
-        else if (creatorpacket_type == header.type)
-        {
-          if (LoadCreatorPacket(diskfile, offset, header))
-          {
-            packets++;
-          }
-        }
-      }
+      pktOffset.push_back(offset);
+      pktHeader.push_back(header);
 
       // Advance to the next packet
       offset += header.length;
@@ -582,6 +522,147 @@ bool Par2Repairer::LoadPacketsFromFile(std::string filename)
   }
 
   return true;
+}
+
+// Opens its own handle: DiskFile::Read seeks, so one handle cannot serve
+// concurrent reads at different offsets.
+bool Par2Repairer::VerifyPacketHash(const std::string &filename, u64 offset,
+                                    const PACKET_HEADER &header)
+{
+  DiskFile df(sout, serr, output_lock);
+  if (!df.Open(filename))
+    return false;
+
+  const size_t buffersize = (size_t)std::min((u64)1048576, (u64)header.length);
+  std::vector<u8> buffer(buffersize);
+
+  MD5Context context;
+  context.Update(&header.setid, sizeof(header)-offsetof(PACKET_HEADER, setid));
+
+  u64 current = offset + sizeof(PACKET_HEADER);
+  const u64 limit = offset + header.length;
+  while (current < limit)
+  {
+    size_t want = (size_t)std::min((u64)buffersize, limit-current);
+    if (!df.Read(current, &buffer[0], want))
+    {
+      df.Close();
+      return false;
+    }
+    context.Update(&buffer[0], want);
+    current += want;
+  }
+  df.Close();
+
+  MD5Hash hash;
+  context.Final(hash);
+  return hash == header.hash;
+}
+
+// Returns false if a packet failed, with resumeOffset set one byte past it.
+bool Par2Repairer::VerifyAndDispatchPackets(DiskFile *diskfile,
+                                            const std::string &filename,
+                                            std::vector<u64> &pktOffset,
+                                            std::vector<PACKET_HEADER> &pktHeader,
+                                            std::map<u64, bool> &pktVerified,
+                                            u32 &packets, u32 &recoverypackets,
+                                            u64 &resumeOffset)
+{
+  const size_t count = pktOffset.size();
+  if (count == 0)
+    return true;
+
+  std::vector<size_t> todo;
+  todo.reserve(count);
+  for (size_t i = 0; i < count; i++)
+  {
+    if (pktVerified.find(pktOffset[i]) == pktVerified.end())
+      todo.push_back(i);
+  }
+
+  std::vector<char> result(todo.size(), 0);
+  if (todo.size() == 1)
+  {
+    result[0] = VerifyPacketHash(filename, pktOffset[todo[0]],
+                                 pktHeader[todo[0]]) ? 1 : 0;
+  }
+  else if (!todo.empty())
+  {
+    std::vector<size_t> slots(todo.size());
+    for (size_t j = 0; j < todo.size(); j++) slots[j] = j;
+
+    foreach_parallel<size_t>(slots, filethreads, [&](const size_t &j) {
+      const size_t i = todo[j];
+      result[j] = VerifyPacketHash(filename, pktOffset[i], pktHeader[i]) ? 1 : 0;
+    });
+  }
+  for (size_t j = 0; j < todo.size(); j++)
+    pktVerified[pktOffset[todo[j]]] = (result[j] != 0);
+
+  bool allgood = true;
+  for (size_t i = 0; i < count; i++)
+  {
+    if (pktVerified[pktOffset[i]])
+    {
+      DispatchPacket(diskfile, pktOffset[i], pktHeader[i], packets, recoverypackets);
+    }
+    else
+    {
+      resumeOffset = pktOffset[i] + 1;
+      allgood = false;
+      break;
+    }
+  }
+
+  pktOffset.clear();
+  pktHeader.clear();
+  return allgood;
+}
+
+void Par2Repairer::DispatchPacket(DiskFile *diskfile, u64 offset,
+                                  PACKET_HEADER &header,
+                                  u32 &packets, u32 &recoverypackets)
+{
+  // If this is the first packet that we have found then record the setid
+  if (firstpacket)
+  {
+    setid = header.setid;
+    firstpacket = false;
+  }
+
+  // Is the packet from the correct set
+  if (setid != header.setid)
+    return;
+
+  // Is it a packet type that we are interested in
+  if (recoveryblockpacket_type == header.type)
+  {
+    if (LoadRecoveryPacket(diskfile, offset, header))
+    {
+      recoverypackets++;
+      packets++;
+    }
+  }
+  else if (fileverificationpacket_type == header.type)
+  {
+    if (LoadVerificationPacket(diskfile, offset, header))
+      packets++;
+  }
+  else if (filedescriptionpacket_type == header.type)
+  {
+    if (LoadDescriptionPacket(diskfile, offset, header))
+      packets++;
+  }
+  else if (mainpacket_type == header.type)
+  {
+    if (LoadMainPacket(diskfile, offset, header))
+      packets++;
+  }
+  else if (creatorpacket_type == header.type)
+  {
+    if (LoadCreatorPacket(diskfile, offset, header))
+      packets++;
+  }
 }
 
 // Finish loading a recovery packet
