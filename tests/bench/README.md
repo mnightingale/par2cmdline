@@ -34,6 +34,38 @@ block in the corpus. Scattering individual bytes would be wrong — PAR2 repairs
 per block, so thinly-spread byte corruption destroys far more blocks than the
 byte count implies.
 
+## Isolating the reconstruct phase (`--phase-split`)
+
+`par2 repair` is scan-then-reconstruct, and only the reconstruct phase does any
+GF16 work. Dividing *total* repair time by `M × N × blocksize` therefore charges
+the scan to the compute and understates throughput — badly. At 10 GiB the scan
+is a third of a delete-mode repair and nearly half a corrupt-mode one.
+
+`--phase-split` times `par2 verify` against the same damage state before the
+repair and reports the difference:
+
+```
+mode/backend                  scan   reconst      GB/s    vs cpu
+delete/cpu                  10.95s    20.06s     107.0     1.00x
+```
+
+The `vs cpu` column in that table compares *reconstruct* times, which is the
+only part a GF16 backend controls. The total-repair table above it is what a
+user actually experiences; both are printed, and they will not agree.
+
+Two caveats the harness prints for you:
+
+- **Quote the delete-mode figure.** In corrupt mode `repair` also rewrites
+  recovered blocks back into the damaged files in place, work `verify` never
+  does, so the difference is not purely GF16 and the reconstruct column is
+  inflated.
+- Medians are reported rather than bests, because the difference of two timings
+  is noisier than either one.
+
+`verify` on a damaged corpus is expected to exit `1` (`eRepairPossible`). Exit
+`0` means the damage never took effect and exit `2` means it exceeded the
+available recovery data; both abort the run rather than producing a number.
+
 ## Correctness
 
 Every repair is verified by comparing SHA-256 of each file against the manifest
@@ -58,10 +90,11 @@ harness **aborts** rather than reporting warm-cache numbers as cold.
 python3 tests/bench/parbench.py --size 10G --repeat 3
 ```
 
-Comparing backends once the `--gpu` flag exists:
+Comparing backends once the `--gpu` flag exists — use `--phase-split` for
+anything you intend to quote as a throughput figure:
 
 ```bash
-python3 tests/bench/parbench.py --size 10G --repeat 3 --backend cpu --backend gpu
+python3 tests/bench/parbench.py --size 10G --repeat 3 --phase-split --backend cpu --backend gpu
 ```
 
 Requesting a GPU backend from a binary built without `--gpu` support is a hard
@@ -78,6 +111,7 @@ Useful options:
 | `--damage` | Percent damage, default 10. Must be below redundancy. |
 | `--mode` | `delete`, `corrupt` or `both` (default) |
 | `--repeat` | Repair repetitions, default 1 |
+| `--phase-split` | Subtract the scan to isolate reconstruct throughput. Roughly doubles runtime. |
 | `--threads` | par2 `-t`, default par2's own choice |
 | `--json` | Write full results for later comparison |
 

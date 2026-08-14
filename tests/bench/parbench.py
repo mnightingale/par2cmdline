@@ -20,6 +20,13 @@ because they exercise very different code paths:
 Run both. Reporting only 'delete' would flatter the GPU; reporting only
 'corrupt' would hide the speedup that is actually there.
 
+--phase-split additionally times `par2 verify` against the same damage state
+and subtracts it, isolating the reconstruct phase from the scan that precedes
+it. Use it for any throughput claim: dividing *total* repair time by the GF16
+work charges the scan to the compute, which is how an earlier revision of
+BASELINE.md came to report a CPU baseline 1.8x too slow and a GPU speedup that
+did not exist.
+
 Not part of `make check` -- the corpora are far too large.
 """
 
@@ -31,11 +38,19 @@ import platform
 import random
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import time
 
 CHUNK = 16 * 1024 * 1024
+
+# par2 exit codes we care about (src/libpar2.h). `verify` on a damaged corpus
+# is *expected* to return eRepairPossible; treating that as failure would make
+# --phase-split unusable, and treating eRepairNotPossible as success would let
+# us time a repair that never happened.
+PAR2_SUCCESS = 0
+PAR2_REPAIR_POSSIBLE = 1
 
 # Maps a backend name to the extra par2 arguments that select it. The --gpu
 # flag does not exist yet (it arrives with the GPU backend); until then only
@@ -214,11 +229,27 @@ def backend_args(cfg, backend):
     return BACKEND_ARGS[backend]
 
 
+def blocks_in(size, block_size):
+    """Blocks a file of this size occupies. PAR2 blocks never span files, so
+    every file rounds up and the last block is partially used."""
+    return (size + block_size - 1) // block_size
+
+
+def gf16_work(source_blocks, lost_blocks, block_size):
+    """Multiply-add bytes to reconstruct lost_blocks outputs.
+
+    Every source block is applied to every reconstructed block, so the work is
+    the product. This is the only correct denominator for a throughput figure,
+    and it must be paired with the reconstruct time alone -- see --phase-split.
+    """
+    return source_blocks * lost_blocks * block_size
+
+
 def damage_delete(cfg, manifest, block_size):
     """Move whole files aside until ~damage% of total bytes is gone.
 
-    Returns (names, bytes, undo). Files are moved to a stash rather than
-    deleted, so undo is a rename rather than a multi-gigabyte regeneration.
+    Returns (names, bytes, lost_blocks, undo). Files are moved to a stash rather
+    than deleted, so undo is a rename rather than a multi-gigabyte regeneration.
 
     Granularity is limited by file size: with few large files the achievable
     damage may overshoot the target, so we stop just short of it.
@@ -253,11 +284,18 @@ def damage_delete(cfg, manifest, block_size):
         for src, dst in moved:
             os.replace(dst, src)  # overwrites whatever repair produced
 
-    return damaged, removed, undo
+    # Count blocks exactly rather than dividing bytes by block size: each file
+    # rounds up to a whole block, so the byte estimate runs low by up to one
+    # block per deleted file and would inflate any GB/s derived from it.
+    lost_blocks = sum(blocks_in(manifest["files"][n]["size"], block_size)
+                      for n in damaged)
+    return damaged, removed, lost_blocks, undo
 
 
 def damage_corrupt(cfg, manifest, block_size):
     """Overwrite whole blocks in place, so 'damage%' means percent of blocks.
+
+    Returns (names, bytes, lost_blocks, undo).
 
     Scattering individual bytes would be wrong: PAR2 repairs at block
     granularity, so thinly-spread byte corruption destroys far more blocks
@@ -271,7 +309,7 @@ def damage_corrupt(cfg, manifest, block_size):
     blocks = []
     for name in sorted(manifest["files"]):
         size = manifest["files"][name]["size"]
-        nblocks = (size + block_size - 1) // block_size
+        nblocks = blocks_in(size, block_size)
         for b in range(nblocks):
             off = b * block_size
             blocks.append((name, off, min(block_size, size - off)))
@@ -320,7 +358,8 @@ def damage_corrupt(cfg, manifest, block_size):
                     fh.close()
         os.remove(stash_path)
 
-    return sorted(by_file), corrupted_bytes, undo
+    # picks are distinct blocks, so this is exact
+    return sorted(by_file), corrupted_bytes, len(picks), undo
 
 
 def verify(cfg, manifest):
@@ -354,21 +393,41 @@ def drop_caches(cfg):
     return True
 
 
-def repair_run(cfg, backend, manifest, mode, block_size):
-    """One damage/repair/verify cycle. Returns a result dict."""
-    if mode == "delete":
-        damaged, dmg_bytes, undo = damage_delete(cfg, manifest, block_size)
-    else:
-        damaged, dmg_bytes, undo = damage_corrupt(cfg, manifest, block_size)
-
-    cold = drop_caches(cfg)
-
-    args = ["repair", "-q"]
+def par2_args(cfg, backend, verb):
+    args = [verb, "-q"]
     if cfg.threads:
         args.append(f"-t{cfg.threads}")
     args += backend_args(cfg, backend)
     args.append("bench.par2")
-    elapsed, rc, out = run_par2(cfg, args, cfg.corpus_dir)
+    return args
+
+
+def repair_run(cfg, backend, manifest, mode, block_size, source_blocks):
+    """One damage/repair/verify cycle. Returns a result dict."""
+    if mode == "delete":
+        damaged, dmg_bytes, lost_blocks, undo = damage_delete(cfg, manifest, block_size)
+    else:
+        damaged, dmg_bytes, lost_blocks, undo = damage_corrupt(cfg, manifest, block_size)
+
+    scan_secs = None
+    if cfg.phase_split:
+        # Time the scan alone against this exact damage state. It has to run
+        # before the repair, since afterwards there is nothing left to scan.
+        # Caches are dropped again below so the repair is measured from the
+        # same starting point rather than warmed by this pass.
+        drop_caches(cfg)
+        scan_secs, rc, out = run_par2(cfg, par2_args(cfg, backend, "verify"), cfg.corpus_dir)
+        if rc != PAR2_REPAIR_POSSIBLE:
+            undo()
+            why = {
+                PAR2_SUCCESS: "verify found nothing wrong -- the damage did not "
+                              "take effect, so the repair below would measure nothing",
+            }.get(rc, "verify says the damage exceeds the available recovery data")
+            return {"ok": False, "error": f"{why} (rc={rc})", "output": out[-2000:]}
+
+    cold = drop_caches(cfg)
+
+    elapsed, rc, out = run_par2(cfg, par2_args(cfg, backend, "repair"), cfg.corpus_dir)
 
     if rc != 0:
         undo()
@@ -380,13 +439,61 @@ def repair_run(cfg, backend, manifest, mode, block_size):
     if bad:
         return {"ok": False, "error": "; ".join(bad)}
 
-    return {
+    r = {
         "ok": True,
         "seconds": elapsed,
         "damaged_files": len(damaged),
         "damaged_bytes": dmg_bytes,
+        "lost_blocks": lost_blocks,
         "cold_cache": cold,
     }
+    if scan_secs is not None:
+        reconstruct = elapsed - scan_secs
+        work = gf16_work(source_blocks, lost_blocks, block_size)
+        r["scan_seconds"] = scan_secs
+        r["reconstruct_seconds"] = reconstruct
+        r["gf16_bytes"] = work
+        # A negative or near-zero difference means the two phases were not
+        # measured against comparable states (or the corpus is too small for
+        # the subtraction to survive the noise); refuse to publish a number.
+        r["gbps"] = work / reconstruct / 1e9 if reconstruct > 0.05 else None
+    return r
+
+
+def report_phase_split(results, block_size, source_blocks):
+    """Scan and reconstruct separately, with throughput off the latter only."""
+    print("\nPhases (median of runs; the difference of two timings is noisier")
+    print("than either, so the median is more defensible than the best):")
+    print(f"{'mode/backend':<24} {'scan':>9} {'reconst':>9} {'GB/s':>9} {'vs cpu':>9}")
+
+    baselines, saw_corrupt = {}, False
+    for key, runs in results["repair"].items():
+        good = [r for r in runs if r.get("ok") and r.get("reconstruct_seconds") is not None]
+        if not good:
+            print(f"{key:<24} {'FAILED':>9}")
+            continue
+        mode = key.split("/")[0]
+        saw_corrupt |= mode == "corrupt"
+        scan = statistics.median(r["scan_seconds"] for r in good)
+        recon = statistics.median(r["reconstruct_seconds"] for r in good)
+        # Derive the rate from the median time rather than taking the median of
+        # the per-run rates: with an even number of runs those disagree, since
+        # the mean of two ratios is not the ratio of their means.
+        work = good[0]["gf16_bytes"]
+        rate = f"{work / recon / 1e9:.1f}" if recon > 0.05 else "-"
+        if key.endswith("/cpu"):
+            baselines[mode] = recon
+        speedup = f"{baselines[mode] / recon:.2f}x" if mode in baselines and recon > 0 else "-"
+        print(f"{key:<24} {scan:>8.2f}s {recon:>8.2f}s {rate:>9} {speedup:>9}")
+
+    per_block = gf16_work(source_blocks, 1, block_size)
+    print(f"\nGF16 work: {source_blocks} source blocks x blocks reconstructed x "
+          f"{block_size} B  ({human(per_block)} per reconstructed block)")
+    if saw_corrupt:
+        print("\nNOTE: in corrupt mode the subtraction is not purely GF16. `repair`\n"
+              "      rewrites recovered blocks back into the damaged files in place,\n"
+              "      work `verify` never does, so the reconstruct column is inflated\n"
+              "      and its GB/s understated. Quote the delete-mode figure.")
 
 
 def main():
@@ -410,8 +517,13 @@ def main():
                     help="backend to test; repeatable (default cpu)")
     ap.add_argument("--repeat", type=int, default=1, help="repair repetitions (default 1)")
     ap.add_argument("--threads", type=int, default=0, help="par2 -t (0 = par2 default)")
+    ap.add_argument("--phase-split", action="store_true",
+                    help="also time `par2 verify` against the same damage state and "
+                         "subtract it, isolating the reconstruct phase from the scan. "
+                         "Required for any GB/s claim; roughly doubles runtime.")
     ap.add_argument("--drop-caches", action="store_true",
-                    help="drop the page cache before each repair; aborts if it cannot")
+                    help="drop the page cache before each timed par2 run (both phases "
+                         "under --phase-split); aborts if it cannot")
     ap.add_argument("--drop-caches-cmd", nargs="+", help="override the cache-drop command")
     ap.add_argument("--skip-create", action="store_true",
                     help="reuse existing bench.par2 instead of timing creation")
@@ -487,21 +599,27 @@ def main():
             print(f"\n=== repair [{key}] ===")
             runs = []
             for i in range(cfg.repeat):
-                r = repair_run(cfg, backend, manifest, mode, block_size)
+                r = repair_run(cfg, backend, manifest, mode, block_size, source_blocks)
                 if not r["ok"]:
                     print(f"  run {i + 1}: FAILED - {r['error']}")
                     runs.append(r)
                     break
                 # blocks actually lost, checked against available recovery
-                lost = r["damaged_bytes"] / block_size
-                if lost > recovery_blocks:
-                    print(f"  WARNING: {lost:.0f} blocks damaged but only "
+                if r["lost_blocks"] > recovery_blocks:
+                    print(f"  WARNING: {r['lost_blocks']} blocks damaged but only "
                           f"{recovery_blocks} recovery blocks exist")
                 pct = 100.0 * r["damaged_bytes"] / cfg.size
-                print(f"  run {i + 1}: {r['seconds']:.2f}s  "
-                      f"({r['damaged_files']} files, {human(r['damaged_bytes'])} "
-                      f"= {pct:.1f}% damaged, cache "
-                      f"{'cold' if r['cold_cache'] else 'warm'})")
+                line = (f"  run {i + 1}: {r['seconds']:.2f}s  "
+                        f"({r['damaged_files']} files, {r['lost_blocks']} blocks, "
+                        f"{human(r['damaged_bytes'])} = {pct:.1f}% damaged, cache "
+                        f"{'cold' if r['cold_cache'] else 'warm'})")
+                if cfg.phase_split:
+                    gbps = r["gbps"]
+                    line += (f"\n           scan {r['scan_seconds']:.2f}s  "
+                             f"reconstruct {r['reconstruct_seconds']:.2f}s"
+                             + (f"  = {gbps:.1f} GB/s" if gbps else
+                                "  (too short to derive a rate)"))
+                print(line)
                 runs.append(r)
             results["repair"][key] = runs
 
@@ -513,7 +631,9 @@ def main():
           f"cache {'cold' if cfg.drop_caches else 'WARM (not dropped)'}")
     print("=" * 72)
 
-    # GF16 work per repair is (source blocks) * (blocks reconstructed) * block size
+    # Total repair wall time. This is what a user experiences, but it includes
+    # the scan, so it is NOT a GF16 throughput measurement -- see below.
+    print("Total repair (scan + reconstruct):")
     print(f"{'mode/backend':<24} {'best':>9} {'mean':>9} {'vs cpu':>9}")
     baselines = {}
     for key, runs in results["repair"].items():
@@ -527,6 +647,9 @@ def main():
             baselines[mode] = best
         speedup = f"{baselines[mode] / best:.2f}x" if mode in baselines else "-"
         print(f"{key:<24} {best:>8.2f}s {mean:>8.2f}s {speedup:>9}")
+
+    if cfg.phase_split:
+        report_phase_split(results, block_size, source_blocks)
 
     if cfg.json:
         with open(cfg.json, "w") as f:
