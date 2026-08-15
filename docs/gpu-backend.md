@@ -426,29 +426,51 @@ CPU-bound scan. Report both; either alone misleads.
   busy ~63% of the GF16 phase — see `BASELINE.md`. Note this contradicts
   gotcha #6, which was measured on unified memory where staging was a memcpy.
 
-  **Run the cheap diagnostic before restructuring anything.** Two explanations
-  fit that number: too few batches in flight, or the copies and the kernel
-  sharing one engine. `PARPAR_GPU_STAGING` distinguishes them without a
-  rebuild:
+  **The cheap diagnostic has been run; depth is not the answer.** Two
+  explanations fitted that number — too few batches in flight, or the copies
+  and the kernel sharing one engine — and `PARPAR_GPU_STAGING` was added to
+  distinguish them without a rebuild. Swept over `2 3 4 6 8` on the 4070 Ti,
+  twice, 10 GiB delete-mode repair:
 
-  ```bash
-  for n in 2 3 4 6 8; do
-    PARPAR_GPU_STAGING=$n PARPAR_GPU_STATS=1 par2 repair --gpu=auto -q bench.par2
-  done
-  ```
+  | depth | gpu/wall (pass 1) | gpu/wall (pass 2) | gpu busy (p1 / p2) |
+  | --- | --- | --- | --- |
+  | 2 | 60.7% | 60.1% | 2.05 / 2.11 s |
+  | 3 | 63.7% | 58.8% | 2.05 / 2.11 s |
+  | 4 | 62.5% | 58.0% | 2.05 / 2.10 s |
+  | 6 | 61.9% | 56.9% | 2.06 / 2.09 s |
+  | 8 | 58.4% | 56.2% | 2.12 / 2.07 s |
 
-  The stats line ends with `staging areas N`, so each result carries the depth
-  that produced it. If `gpu` time rises as a share of `wall`, depth was the
-  limit and this is the whole fix. If nothing moves, it is engine
-  serialisation, and the fix is the queue restructuring below.
+  GPU busy time is flat at 2.05–2.12 s — 3% spread across a 4x range of depth
+  — and the share never rises with depth; pass 2 declines monotonically. The
+  63.7% at depth 3 in pass 1 was noise, and pass 2 puts that depth at 58.8%.
+  **So it is engine serialisation**, and the queue restructuring below is the
+  real fix.
 
-  Device memory scales linearly with the depth, so on a 12 GB card a large
-  `-m` and a high depth can exhaust VRAM — the run will fall back to the CPU
-  rather than fail, which is easy to mistake for "no improvement". Check the
-  reported method is still the GPU.
+  The arithmetic says the same thing directly: at depth 3, `gpu 2.05 + stage
+  0.60 + lut 0.06 + readback 0.13 = 2.84 s` against a 3.22 s wall. The phases
+  *add*. Genuine overlap would put wall near `max(...)`, about 2.1 s.
 
-- **If depth is not the answer: give the copies their own queue.** The device
-  is currently created with a single compute queue
+  **Leave the default at 2.** Depth costs device memory and buys nothing here;
+  by depth 8 staging degrades outright (1.26 s against 0.62 s at depth 2), on
+  more host-visible buffers with worse locality.
+
+  Keep `PARPAR_GPU_STAGING` rather than removing it with the experiment: once
+  the copies genuinely overlap compute, depth becomes load-bearing for the
+  first time — two areas may no longer be enough to keep both engines fed — so
+  **re-run this sweep after the queue change**, when the conclusion could
+  legitimately flip.
+
+  Two notes for whoever re-runs it. Device memory scales linearly with depth,
+  so on a 12 GB card a large `-m` and a high depth can exhaust VRAM; the run
+  falls back to the CPU rather than failing, which is easy to mistake for "no
+  improvement" — check the method is still the GPU. (It did not happen in the
+  runs above: `[GPU STATS]` only prints from the GPU controller and it printed
+  on all ten.) And compare only within a pass — pass 2 above ran uniformly
+  slower than pass 1, so a cross-pass comparison of absolute times is
+  meaningless.
+
+- **Give the copies their own queue.** This is the fix the sweep points to.
+  The device is currently created with a single compute queue
   (`controller_vulkan.cpp:309-335`, `queueCount = 1`), and `run_kernel` puts
   both `vkCmdCopyBuffer` calls and the `vkCmdDispatch` in **one command buffer
   on that one queue**. NVIDIA runs copies on the compute engine unless they are
