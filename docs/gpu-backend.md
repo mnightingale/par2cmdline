@@ -334,6 +334,41 @@ Already done for you:
 
 ---
 
+## 6a. Release artifacts
+
+Linux ships **two** binaries, because one cannot be both portable and
+GPU-capable:
+
+| Artifact | Linking | GPU | Runtime requirement |
+| --- | --- | --- | --- |
+| `par2cmdline-turbo-linux-<arch>` | `-static -s` | no | none - runs on anything |
+| `par2cmdline-turbo-linux-amd64-gpu` | dynamic, `-s` | Vulkan | glibc >= the builder's, plus a Vulkan driver at runtime (optional; it falls back to the CPU without one) |
+
+The Vulkan backend finds the driver with `dlopen`, and `dlopen` from a fully
+static glibc binary is unreliable - it needs the exact glibc it was linked
+against to be present, which is precisely what the static build exists to avoid
+depending on. So the static artifacts stay CPU-only and the GPU build is
+dynamically linked. The GPU job prints `ldd par2` so each release records what
+it actually needs.
+
+Only amd64 gets a GPU build: the headers are architecture-independent, but
+cross-compiling would need them installed for the target multiarch, and Linux
+discrete GPUs are effectively all amd64.
+
+macOS needs no such split - nothing there is statically linked, so the release
+binaries already carry Metal (configure auto-detects it, and the runners have
+the shader compiler). Note that the macOS release job must set **`OBJCXXFLAGS`**
+as well as `CFLAGS`/`CXXFLAGS`: the Metal backend is Objective-C++ and automake
+compiles `.mm` with `OBJCXX`, so without it those objects build for the runner's
+native architecture and the cross-arch link fails with undefined `PAR2ProcMetal`
+symbols.
+
+Windows release binaries are still CPU-only: `parpar/gf16.vcxproj` enables
+Vulkan from `ParParVulkan`, which auto-detects the SDK, and the runners have no
+SDK installed.
+
+---
+
 ## 7. Verification checklist
 
 In order. Do not skip to benchmarking.

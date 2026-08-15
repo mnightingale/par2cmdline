@@ -77,6 +77,59 @@ jobs:
           par2
         retention-days: 5
 
+  # GPU-enabled Linux build, shipped alongside the static ones above rather
+  # than replacing them, because the two cannot be the same binary: the Vulkan
+  # backend resolves the driver with dlopen, which is unreliable from a fully
+  # static glibc binary - and running anywhere is the whole point of the static
+  # build. So there are two artifacts: a static CPU-only one that runs on old
+  # distros, and this, which needs a glibc at least as new as the runner's but
+  # can use a GPU.
+  #
+  # amd64 only. The headers are architecture-independent, but a cross-build
+  # would need them installed for the target multiarch, and Linux discrete GPUs
+  # are overwhelmingly amd64 - which is where the measured 5x lives.
+  build-linux-gpu:
+    needs:
+    - build-check-linux
+
+    name: build-linux-gpu (amd64)
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v7
+
+    # Headers and a shader compiler only; the driver is found at runtime, so
+    # neither a GPU nor the loader library is needed to build.
+    - name: Install Vulkan build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libvulkan-dev glslang-tools
+
+    # Note the absence of -static, unlike the CPU builds. -s still strips.
+    - name: Build
+      env:
+        LDFLAGS: -s
+      run: |
+        ./automake.sh
+        ./configure --enable-vulkan
+        make -j"$(nproc)"
+
+    # Records what this binary actually needs at runtime, which is the whole
+    # reason it is a separate artifact.
+    - name: Report runtime dependencies
+      run: |
+        ./par2 --list-gpus
+        ldd par2
+
+    - name: Upload binary artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: par2cmdline-turbo-linux-amd64-gpu
+        path: |
+          par2
+        retention-days: 5
+
   build-windows:
     needs:
     - build-check-windows
