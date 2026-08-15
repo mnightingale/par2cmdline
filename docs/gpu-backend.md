@@ -162,22 +162,24 @@ listed in §1.
 - `tests/gpu_test.vcxproj` — same detection, so the test picks the same
   backend the library was built with.
 
-### Build wiring — NOT done
+- `configure.ac` — a `--disable-vulkan` block mirroring the Metal one. Probes
+  for `vulkan/vulkan.h` (honouring `$VULKAN_SDK`), for `glslangValidator` or
+  `glslang` (recent SDKs renamed it; both accept the same flags), and for
+  `dlopen`. Defaults to `auto`: absent any of those it disables itself with a
+  warning, and only `--enable-vulkan` turns that into an error.
+- `Makefile.am` — `libparpar_gf16_vulkan.a` under `if HAS_VULKAN`, mirroring
+  `libparpar_gf16_metal.a`, plus a `gf16_vulkan_spv.h` rule. `glslangValidator
+  --vn` emits the `uint32_t[]` directly, so unlike the Metal rule there is no
+  `od`/`sed` step.
 
-**`configure.ac` and `Makefile.am` have not been touched**, so the autotools
-build does not compile the Vulkan backend at all. On Linux, `./configure &&
-make` currently produces a CPU-only binary. Needed there:
-
-- `configure.ac` — a `--disable-vulkan` block mirroring the Metal one, probing
-  for the Vulkan headers and `glslangValidator`.
-- `Makefile.am` — a conditional archive mirroring `libparpar_gf16_metal.a`,
-  plus a `gf16_vulkan_spv.h` rule mirroring the `gf16_metal_lib.h` one. The
-  MSVC build generates that header with `glslangValidator --vn`, which emits
-  the `uint32_t[]` directly and needs no `bin2c` step.
-
-This is the largest remaining gap and the reason the backend is Windows-only
-today. Nothing in the backend itself is platform-specific — `vulkan_loader.cpp`
-already has the `dlopen` path — so this is build plumbing rather than porting.
+> **The autotools wiring is written but has not been run.** There is no
+> autoconf, automake or WSL on the Windows benchmark machine, so it has been
+> reviewed against the Metal wiring but never executed. `.github/workflows/
+> build-check-linux.yml` runs `./automake.sh && ./configure && make` and will
+> exercise the disabled path (CI runners have no Vulkan headers, so it should
+> configure to `have_vulkan=no` and build CPU-only). **The enabled path is
+> still unproven** — the first person on a Linux box with the SDK should
+> expect to debug it.
 
 ### The kernel
 
@@ -365,9 +367,10 @@ CPU-bound scan. Report both; either alone misleads.
   `gpu_test` bit-exact across all 20 shapes and both coefficient paths, the
   full suite green, multi-chunk `-m4` repair correct, and both
   create/repair backend combinations hash-identical.
-- **Autotools support for the Vulkan backend** — `configure.ac` and
-  `Makefile.am`, see §4. Until then the backend builds on Windows only, which
-  is a packaging gap rather than a porting one.
+- **Verify the autotools build on Linux.** The wiring is written (§4) but has
+  never been executed — there is no autoconf on the Windows machine it was
+  written on. Both the enabled and disabled paths need a real run before the
+  backend can be called cross-platform.
 - **Staging is now the bottleneck worth attacking.** On the 4070 Ti a 10 GiB
   repair is 2.07 s of kernel against 0.92 s of PCIe staging, leaving the GPU
   busy ~63% of the GF16 phase — see `BASELINE.md`. Note this contradicts

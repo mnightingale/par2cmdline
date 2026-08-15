@@ -221,6 +221,12 @@ libparpar_gf16_rvv_zvbc_a_SOURCES = \
 	parpar/gf16/gf16_clmul_rvv.h
 libparpar_gf16_rvv_zvbc_a_CFLAGS = $(CFLAGS_RV64ZVBC) $(CFLAGS_RV32ZVBC) $(libparpar_gf16_a_CFLAGS)
 
+# Both GPU backends generate an embedded kernel header, and on macOS both can
+# be enabled at once (Vulkan via MoltenVK), so these are appended to rather
+# than assigned by either block.
+BUILT_SOURCES =
+CLEANFILES =
+
 # Metal GPU backend (macOS). Objective-C++, so it lives in its own archive
 # rather than alongside the ISA-specific C sources.
 if HAS_METAL
@@ -238,8 +244,8 @@ libparpar_gf16_metal_a_CPPFLAGS = -Iparpar/gf16 $(AM_CPPFLAGS)
 # the built binary carries its own kernel and needs no companion file at
 # runtime. Generated rather than checked in: keeping a binary blob in the tree
 # would make the shader source and the shipped kernel able to drift apart.
-BUILT_SOURCES = parpar/gf16/gf16_metal_lib.h
-CLEANFILES = parpar/gf16/gf16_metal_lib.h \
+BUILT_SOURCES += parpar/gf16/gf16_metal_lib.h
+CLEANFILES += parpar/gf16/gf16_metal_lib.h \
 	parpar/gf16/gf16_metal.air \
 	parpar/gf16/gf16_metal.metallib
 
@@ -251,6 +257,35 @@ parpar/gf16/gf16_metal_lib.h: parpar/gf16/gf16_metal.metal
 	  od -An -tx1 -v parpar/gf16/gf16_metal.metallib \
 	    | sed -e 's/[0-9a-f][0-9a-f]/0x&,/g'; \
 	  echo '};'; } > $@
+endif
+
+# Vulkan GPU backend. Portable C++ rather than Objective-C++, so this archive
+# exists only to keep the SDK include path off every other source file.
+if HAS_VULKAN
+noinst_LIBRARIES += libparpar_gf16_vulkan.a
+libpar2_a_DEPENDENCIES += libparpar_gf16_vulkan.a
+libparpar_gf16_vulkan_a_SOURCES = \
+	parpar/gf16/gpu_device_vulkan.cpp \
+	parpar/gf16/gpu_device_vulkan.h \
+	parpar/gf16/controller_vulkan.cpp \
+	parpar/gf16/controller_vulkan.h \
+	parpar/gf16/vulkan_loader.cpp \
+	parpar/gf16/vulkan_loader.h
+libparpar_gf16_vulkan_a_CPPFLAGS = -Iparpar/gf16 $(AM_CPPFLAGS)
+
+# GLSL -> SPIR-V. glslangValidator's --vn emits the module as a uint32_t[]
+# directly, so unlike the Metal path this needs no od/sed step. Generated
+# rather than checked in for the same reason: a binary blob in the tree could
+# drift from the shader source it is supposed to have come from.
+BUILT_SOURCES += parpar/gf16/gf16_vulkan_spv.h
+CLEANFILES += parpar/gf16/gf16_vulkan_spv.h
+
+# $(@D) is created explicitly because the target directory only exists in the
+# source tree; in a VPATH build ($builddir != $srcdir) nothing else has made it
+# by the time BUILT_SOURCES runs.
+parpar/gf16/gf16_vulkan_spv.h: parpar/gf16/gf16_vulkan.comp
+	$(AM_V_GEN)$(MKDIR_P) $(@D) && \
+	$(GLSLANG) -V --target-env vulkan1.1 --vn gf16_vulkan_spv -o $@ $<
 endif
 
 libparpar_hasher_a_SOURCES = \
@@ -360,7 +395,7 @@ par2_SOURCES = src/par2cmdline.cpp \
 par2_LDADD = libpar2.a -lstdc++ $(PTHREAD_LIBS) $(LDFLAGS_LIBATOMIC) $(LDFLAGS_METAL)
 
 LDADD = -lstdc++ $(PTHREAD_LIBS) $(LDFLAGS_LIBATOMIC) $(LDFLAGS_METAL)
-AM_CPPFLAGS = -Wall -DNDEBUG -DPARPAR_ENABLE_HASHER_MD5CRC -DPARPAR_INVERT_SUPPORT -DPARPAR_SLIM_GF16 -DPARPAR_GPU_SUPPORT $(CPPFLAGS_METAL)
+AM_CPPFLAGS = -Wall -DNDEBUG -DPARPAR_ENABLE_HASHER_MD5CRC -DPARPAR_INVERT_SUPPORT -DPARPAR_SLIM_GF16 -DPARPAR_GPU_SUPPORT $(CPPFLAGS_METAL) $(CPPFLAGS_VULKAN)
 AM_CXXFLAGS = -std=c++14 $(PTHREAD_CFLAGS)
 
 EXTRA_DIST = \
@@ -386,6 +421,8 @@ EXTRA_DIST = \
 	tests/bench/parbench.py \
 	tests/bench/BASELINE.md \
 	tests/bench/README.md \
+	parpar/gf16/gf16_metal.metal \
+	parpar/gf16/gf16_vulkan.comp \
 	tests/flatdata-filelist.txt \
 	tests/subdirdata-filelist.txt \
 	tests/subdirdata-partial-filelist.txt \

@@ -231,5 +231,54 @@ AM_COND_IF([HAS_METAL], [
 	AC_SUBST(LDFLAGS_METAL, "-framework Foundation -framework Metal")
 ])
 
+dnl Vulkan (any platform with a loader). Unlike Metal this is not restricted by
+dnl host_os: the backend is portable C++ and the loader is resolved at runtime.
+AC_ARG_ENABLE([vulkan],
+	[AS_HELP_STRING([--disable-vulkan], [do not build the Vulkan GPU backend])],
+	[enable_vulkan=$enableval], [enable_vulkan=auto])
+
+have_vulkan=no
+vulkan_cppflags=
+AS_IF([test "x$enable_vulkan" != xno], [
+	dnl Nothing is linked against Vulkan -- vulkan_loader.cpp resolves the
+	dnl loader with dlopen so the binary still starts on a machine with no
+	dnl driver -- but the headers are needed to compile against, and the SDK
+	dnl installs them outside the default search path.
+	AS_IF([test "x$VULKAN_SDK" != x], [vulkan_cppflags="-I$VULKAN_SDK/include"])
+
+	save_CPPFLAGS="$CPPFLAGS"
+	CPPFLAGS="$CPPFLAGS $vulkan_cppflags"
+	AC_CHECK_HEADER([vulkan/vulkan.h], [have_vulkan=yes], [have_vulkan=no])
+	CPPFLAGS="$save_CPPFLAGS"
+
+	dnl The kernel is compiled to SPIR-V at build time and embedded, so the
+	dnl shader compiler is required rather than optional. Recent SDKs install
+	dnl it as `glslang`; older ones, and most distro packages, as
+	dnl `glslangValidator`.
+	AS_IF([test "x$have_vulkan" = xyes], [
+		AC_PATH_PROGS([GLSLANG], [glslangValidator glslang], [no],
+			[$PATH$PATH_SEPARATOR$VULKAN_SDK/bin])
+		AS_IF([test "x$GLSLANG" = xno], [
+			have_vulkan=no
+			AC_MSG_WARN([glslangValidator not found; disabling the Vulkan backend.])
+			AC_MSG_WARN([It ships with the Vulkan SDK, or as the glslang package.])])
+	])
+
+	dnl dlopen is in libdl on older glibc and in libc elsewhere.
+	AS_IF([test "x$have_vulkan" = xyes], [
+		AC_SEARCH_LIBS([dlopen], [dl], [], [
+			have_vulkan=no
+			AC_MSG_WARN([dlopen not found; disabling the Vulkan backend.])])
+	])
+])
+
+AS_IF([test "x$enable_vulkan" = xyes && test "x$have_vulkan" = xno],
+	[AC_MSG_ERROR([--enable-vulkan given but the Vulkan headers or shader compiler are unavailable])])
+
+AM_CONDITIONAL([HAS_VULKAN], [test x$have_vulkan = xyes])
+AM_COND_IF([HAS_VULKAN], [
+	AC_SUBST(CPPFLAGS_VULKAN, "-DPARPAR_VULKAN_SUPPORT $vulkan_cppflags")
+])
+
 AC_CONFIG_FILES([Makefile])
 AC_OUTPUT
