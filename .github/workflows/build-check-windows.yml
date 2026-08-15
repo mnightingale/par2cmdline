@@ -15,13 +15,46 @@ jobs:
     - name: Add MSBuild to PATH
       uses: microsoft/setup-msbuild@v3
 
+    # The runner image has no Vulkan SDK, and parpar/gf16.vcxproj auto-detects
+    # it. Without this step the whole GPU backend is silently compiled out and
+    # the binary reports "No GPU devices found" -- which is what shipped before
+    # this step existed.
+    - name: Install Vulkan headers and glslang
+      shell: pwsh
+      env:
+        VULKAN_HEADERS_TAG: vulkan-sdk-1.4.357.0
+        GLSLANG_TAG: 16.5.0
+      run: .\.github\scripts\install-vulkan-build-deps.ps1
+
+    # ParParVulkan=true rather than the default auto-detect: if detection
+    # regresses, the build must fail rather than quietly produce a CPU-only
+    # binary and leave the GPU path untested. Mirrors --enable-vulkan on Linux.
     - name: Build
-      run: msbuild -property:PlatformToolset=ClangCL -property:Configuration=Release -property:Platform=x64 par2cmdline.sln
+      run: msbuild -property:ParParVulkan=true -property:PlatformToolset=ClangCL -property:Configuration=Release -property:Platform=x64 par2cmdline.sln
+
+    # The runners have no GPU, so `--list-gpus` finds no device whether or not
+    # the backend was compiled in -- it cannot tell the two apart, which is
+    # exactly how the silent CPU-only build went unnoticed. Assert on the
+    # generated SPIR-V header instead, which only exists if the shader was
+    # compiled and therefore only if the backend is in the binary.
+    - name: Verify the Vulkan backend was compiled in
+      shell: pwsh
+      run: |
+        if (-not (Test-Path parpar\gf16\gf16_vulkan_spv.h)) {
+          throw "gf16_vulkan_spv.h missing: the Vulkan backend was not built"
+        }
+        Write-Host "Vulkan backend built; SPIR-V header present."
 
     - name: Build Unit Tests
-      run: msbuild -property:Configuration=UnitTests-Release -property:Platform=x64 par2cmdline.sln
+      run: msbuild -property:ParParVulkan=true -property:Configuration=UnitTests-Release -property:Platform=x64 par2cmdline.sln
 
     - name: Run Tests
       shell: pwsh
       run: |
         .\tests\run_tests.ps1 -Par2Binary ".\x64\Release\par2.exe"
+
+    # gpu_test skips rather than fails when no device is present, so this
+    # confirms the GPU-aware test binary at least runs on a GPU-less machine.
+    - name: Run GPU test
+      shell: pwsh
+      run: .\x64\Release\gpu_test.exe

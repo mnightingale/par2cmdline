@@ -152,8 +152,27 @@ jobs:
     - name: Add MSBuild to PATH
       uses: microsoft/setup-msbuild@v3
 
+    # Released Windows binaries were CPU-only until this step existed: the
+    # runner has no Vulkan SDK and parpar/gf16.vcxproj auto-detects it, so the
+    # GPU backend was silently compiled out. glslangValidator runs as a host
+    # tool and the loader is resolved with LoadLibrary at runtime, so one x64
+    # SDK install serves the ARM64 build too.
+    - name: Install Vulkan headers and glslang
+      shell: pwsh
+      env:
+        VULKAN_HEADERS_TAG: vulkan-sdk-1.4.357.0
+        GLSLANG_TAG: 16.5.0
+      run: .\.github\scripts\install-vulkan-build-deps.ps1
+
     - name: Build
-      run: msbuild -property:PlatformToolset=ClangCL -property:Configuration=Release -property:Platform=${{ matrix.platform }} par2cmdline.sln
+      run: msbuild -property:ParParVulkan=true -property:PlatformToolset=ClangCL -property:Configuration=Release -property:Platform=${{ matrix.platform }} par2cmdline.sln
+
+    - name: Verify the Vulkan backend was compiled in
+      shell: pwsh
+      run: |
+        if (-not (Test-Path parpar\gf16\gf16_vulkan_spv.h)) {
+          throw "gf16_vulkan_spv.h missing: the Vulkan backend was not built"
+        }
 
     - name: Upload binary artifact
       uses: actions/upload-artifact@v7
