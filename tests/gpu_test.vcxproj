@@ -46,15 +46,33 @@
     <Import Project="..\par2cmdline.props" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
+  <!-- Same detection as parpar\gf16.vcxproj, and it has to stay in agreement
+       with it: this test picks its backend from these defines, so a mismatch
+       would silently reduce it to testing nothing. controller_vulkan.h keeps
+       Vulkan behind a pimpl, so no SDK include path is needed here. -->
+  <PropertyGroup>
+    <ParParVulkan Condition="'$(ParParVulkan)'=='' And Exists('$(VULKAN_SDK)\Include\vulkan\vulkan.h') And Exists('$(VULKAN_SDK)\Bin\glslangValidator.exe')">true</ParParVulkan>
+    <ParParVulkan Condition="'$(ParParVulkan)'==''">false</ParParVulkan>
+    <ParParVulkanDefines Condition="'$(ParParVulkan)'=='true'">PARPAR_VULKAN_SUPPORT;</ParParVulkanDefines>
+  </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
       <!-- Must match parpar\gf16.vcxproj, which is where the backends this
            test drives are compiled; the autotools build passes the same set
            globally via AM_CPPFLAGS. -->
-      <PreprocessorDefinitions>PARPAR_INVERT_SUPPORT;PARPAR_SLIM_GF16;PARPAR_GPU_SUPPORT;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>PARPAR_INVERT_SUPPORT;PARPAR_SLIM_GF16;PARPAR_GPU_SUPPORT;$(ParParVulkanDefines)%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <!-- parpar\gf16.vcxproj builds with WholeProgramOptimization, so every
+           consumer has to link-time code-generate the whole of gf16.lib. This
+           test pulls in far more of it than the other test executables (both
+           GF16 backends, not just the CPU one), which took a rebuild here from
+           seconds to six minutes. Incremental LTCG still pays that once, to
+           populate its cache, but relinks after it drop back to ~5s, which is
+           what matters when iterating on the backends. The test's own speed is
+           irrelevant; the code it measures is already optimised in gf16.lib. -->
+      <LinkTimeCodeGeneration>UseFastLinkTimeCodeGeneration</LinkTimeCodeGeneration>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>

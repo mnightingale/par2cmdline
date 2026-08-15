@@ -22,6 +22,24 @@
 #ifdef PARPAR_METAL_SUPPORT
 # include "../parpar/gf16/controller_metal.h"
 #endif
+#ifdef PARPAR_VULKAN_SUPPORT
+# include "../parpar/gf16/controller_vulkan.h"
+#endif
+
+// Which backend this build tests. The two are mutually exclusive in practice --
+// Metal is macOS-only, Vulkan is everywhere else -- so choosing at compile time
+// is enough, and it keeps the test a straight A/B against the CPU backend.
+#if defined(PARPAR_METAL_SUPPORT)
+typedef PAR2ProcMetal GpuBackend;
+# define GPU_BACKEND_NAME "Metal"
+#elif defined(PARPAR_VULKAN_SUPPORT)
+typedef PAR2ProcVulkan GpuBackend;
+# define GPU_BACKEND_NAME "Vulkan"
+#endif
+
+#if defined(PARPAR_METAL_SUPPORT) || defined(PARPAR_VULKAN_SUPPORT)
+# define HAVE_GPU_BACKEND 1
+#endif
 
 // The two ways par2cmdline drives a backend. Creation derives coefficients
 // from the input's block number; repair supplies them directly from the
@@ -78,7 +96,7 @@ int main(void)
 {
 	gfmat_init();
 
-#ifndef PARPAR_METAL_SUPPORT
+#ifndef HAVE_GPU_BACKEND
 	std::cout << "SKIP: built without GPU backend support" << std::endl;
 	return 0;
 #else
@@ -87,7 +105,8 @@ int main(void)
 		std::cout << "SKIP: no usable GPU device" << std::endl;
 		return 0;
 	}
-	std::cout << "Testing against: " << devices[gpu_default_device()].name << std::endl;
+	std::cout << "Testing " GPU_BACKEND_NAME " against: "
+		<< devices[gpu_default_device()].name << std::endl;
 
 	std::mt19937 rng(20260814);
 
@@ -138,7 +157,7 @@ int main(void)
 		}
 		cpuProc.deinit();
 
-		PAR2ProcMetal gpuBackend;
+		GpuBackend gpuBackend;
 		if(!gpuBackend.isAvailable()) {
 			std::cout << "SKIP: GPU backend unavailable" << std::endl;
 			return 0;
