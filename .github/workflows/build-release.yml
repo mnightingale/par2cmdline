@@ -4,9 +4,15 @@ on:
   push:
     branches:
     - 'turbo'
-  # Build the full artifact matrix from any branch on demand. Preferred over
-  # adding branches above: a push to a listed branch rebuilds ten artifacts
-  # across four operating systems.
+    # Kept here rather than relying on workflow_dispatch below: dispatch is
+    # only offered for workflows whose file already declares it on the default
+    # branch, and master's copy does not. Until that changes, a push trigger is
+    # the only way to exercise the release matrix from this branch -- which
+    # matters while the Windows jobs are the thing under test. Remove when the
+    # branch merges.
+    - 'feature/gpu-gf16'
+  # Build the full artifact matrix from any branch on demand. Unusable until
+  # this trigger reaches the default branch; see above.
   workflow_dispatch:
 
 jobs:
