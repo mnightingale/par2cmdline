@@ -23,10 +23,18 @@ static bool gpu_stats_enabled() {
 
 namespace {
 struct GpuStats {
+	// stageNs is host-side: the copy_cksum memcpy into the mapped buffer,
+	// summed across the transfer threads. It is CPU time and an aggregate, so
+	// it is NOT comparable to wall and is NOT the PCIe transfer.
 	std::atomic<uint64_t> stageNs{0}, stageBytes{0};
 	std::atomic<uint64_t> lutNs{0};
 	std::atomic<uint64_t> readbackNs{0};
+	// gpuNs is the whole command buffer; copyNs is the vkCmdCopyBuffer portion
+	// of it, i.e. the actual PCIe transfer. Split because they run on the same
+	// engine today, so the difference is what moving copies to a transfer queue
+	// could recover.
 	std::atomic<uint64_t> gpuNs{0};
+	std::atomic<uint64_t> copyNs{0};
 	std::atomic<uint64_t> encodeNs{0};
 	std::atomic<uint64_t> dispatches{0};
 	double wallStart = 0;
@@ -411,11 +419,17 @@ const char* PAR2ProcVulkan::getMethodName() const {
 static void gpu_stats_report(double wall, unsigned areas) {
 	const double s = 1e-9;
 	fprintf(stderr,
-		"[GPU STATS] wall %.2fs | gpu %.2fs over %llu dispatches | "
-		"stage %.2fs (%.1f GiB) | lut+encode %.2fs | readback %.2fs | "
-		"staging areas %u\n",
+		// gpu splits into copy + kernel; host-stage is CPU time summed across
+		// the transfer threads, so it is labelled to stop it being read as
+		// either wall time or PCIe time.
+		"[GPU STATS] wall %.2fs | gpu %.2fs (copy %.2fs + kernel %.2fs) over "
+		"%llu dispatches | host-stage %.2fs cpu (%.1f GiB) | lut+encode %.2fs | "
+		"readback %.2fs | staging areas %u\n",
 		wall,
-		g_stats.gpuNs.load() * s, (unsigned long long)g_stats.dispatches.load(),
+		g_stats.gpuNs.load() * s,
+		g_stats.copyNs.load() * s,
+		(g_stats.gpuNs.load() - g_stats.copyNs.load()) * s,
+		(unsigned long long)g_stats.dispatches.load(),
 		g_stats.stageNs.load() * s,
 		g_stats.stageBytes.load() / 1073741824.0,
 		g_stats.encodeNs.load() * s,
@@ -743,7 +757,7 @@ bool PAR2ProcVulkan::reallocBuffers() {
 			VkQueryPoolCreateInfo qpi = {};
 			qpi.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
 			qpi.queryType = VK_QUERY_TYPE_TIMESTAMP;
-			qpi.queryCount = 2;
+			qpi.queryCount = 3;
 			if(impl->dev.vkCreateQueryPool(impl->device, &qpi, NULL, &a.queries) != VK_SUCCESS)
 				a.queries = VK_NULL_HANDLE; // stats are optional; carry on
 		}
@@ -969,14 +983,17 @@ void PAR2ProcVulkan::completion_worker(ThreadMessageQueue<void*>& q) {
 		impl->dev.vkWaitForFences(impl->device, 1, &a.fence, VK_TRUE, UINT64_MAX);
 
 		if(gpu_stats_enabled() && a.queries != VK_NULL_HANDLE) {
-			uint64_t ts[2] = {0, 0};
-			if(impl->dev.vkGetQueryPoolResults(impl->device, a.queries, 0, 2,
+			// ts[0] before the copies, ts[1] after them, ts[2] after the
+			// dispatch. Real time on the GPU, as opposed to wall time, which
+			// includes queueing and any host-side stall.
+			uint64_t ts[3] = {0, 0, 0};
+			if(impl->dev.vkGetQueryPoolResults(impl->device, a.queries, 0, 3,
 					sizeof(ts), ts, sizeof(uint64_t),
 					VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) == VK_SUCCESS
-			   && ts[1] > ts[0]) {
-				// Real time on the GPU, as opposed to wall time, which
-				// includes queueing and any host-side stall.
-				g_stats.gpuNs += (uint64_t)((ts[1] - ts[0]) * impl->timestampPeriod);
+			   && ts[2] > ts[0]) {
+				g_stats.gpuNs += (uint64_t)((ts[2] - ts[0]) * impl->timestampPeriod);
+				if(ts[1] > ts[0])
+					g_stats.copyNs += (uint64_t)((ts[1] - ts[0]) * impl->timestampPeriod);
 			}
 			g_stats.dispatches++;
 		} else if(gpu_stats_enabled()) {
@@ -1098,7 +1115,7 @@ void PAR2ProcVulkan::run_kernel(unsigned area, unsigned numInputs) {
 
 	const bool timing = gpu_stats_enabled() && a.queries != VK_NULL_HANDLE;
 	if(timing) {
-		impl->dev.vkCmdResetQueryPool(a.cmd, a.queries, 0, 2);
+		impl->dev.vkCmdResetQueryPool(a.cmd, a.queries, 0, 3);
 		impl->dev.vkCmdWriteTimestamp(a.cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
 		                              a.queries, 0);
 	}
@@ -1112,6 +1129,12 @@ void PAR2ProcVulkan::run_kernel(unsigned area, unsigned numInputs) {
 	VkBufferCopy lutCopy = {};
 	lutCopy.size = lutBytes;
 	impl->dev.vkCmdCopyBuffer(a.cmd, a.hostLut.buffer, a.devLut.buffer, 1, &lutCopy);
+
+	// Splits the command buffer's GPU time into transfer and compute. Both run
+	// on the same engine today, so this is what a transfer queue could overlap.
+	if(timing)
+		impl->dev.vkCmdWriteTimestamp(a.cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		                              a.queries, 1);
 
 	// Two dependencies in one barrier: the copies above must land before the
 	// kernel reads them, and the previous batch's accumulation into the output
@@ -1141,7 +1164,7 @@ void PAR2ProcVulkan::run_kernel(unsigned area, unsigned numInputs) {
 
 	if(timing)
 		impl->dev.vkCmdWriteTimestamp(a.cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-		                              a.queries, 1);
+		                              a.queries, 2);
 
 	if(impl->dev.vkEndCommandBuffer(a.cmd) != VK_SUCCESS) {
 		_batchCompleted(area);

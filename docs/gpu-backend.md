@@ -273,8 +273,8 @@ These cost real debugging time. Do not rediscover them.
 
    **This does not carry over to discrete hardware.** There staging is a real
    PCIe transfer rather than a memcpy into memory the GPU already sees. On the
-   4070 Ti a 10 GiB repair spends 0.92 s staging against 2.07 s of kernel, so
-   the GPU is busy only ~63% of the GF16 phase. The lesson survives, the
+   4070 Ti a 10 GiB repair spends 0.44 s on PCIe copies against 1.61 s of
+   kernel, and the GPU is busy only ~60% of the GF16 phase. The lesson survives, the
    conclusion does not: instrument on the machine in front of you.
 
 ---
@@ -421,10 +421,30 @@ CPU-bound scan. Report both; either alone misleads.
   shader compiler (`metal 32023.883` as of 2026-08), so that workflow requires
   it with `--enable-metal` too — both GPU backends are now built by CI on every
   push, on the platform that can build each.
-- **Staging is now the bottleneck worth attacking.** On the 4070 Ti a 10 GiB
-  repair is 2.07 s of kernel against 0.92 s of PCIe staging, leaving the GPU
-  busy ~63% of the GF16 phase — see `BASELINE.md`. Note this contradicts
-  gotcha #6, which was measured on unified memory where staging was a memcpy.
+- **Overlapping the PCIe copies with the kernel.** The GPU is busy ~60% of the
+  GF16 phase, and within that busy time the copies and the dispatch run on one
+  engine and add rather than overlap.
+
+  **Size the prize before building anything.** The stats line now splits GPU
+  time into `copy` and `kernel`, because an earlier reading of it conflated the
+  two and over-stated this item. On a 10 GiB repair, over three runs:
+
+  | | |
+  | --- | --- |
+  | kernel | 1.61 s |
+  | PCIe copies | 0.44 s (21% of GPU-busy, 13% of the phase) |
+  | phase wall | 3.40 s |
+
+  Perfect overlap therefore saves **~0.44 s of a 3.40 s phase**, which is ~13%
+  of the GF16 phase and roughly **3–4% of a delete-mode repair end to end**.
+  That is the ceiling, not the expectation. Weigh it against the fact that this
+  is synchronisation code where a mistake corrupts repairs silently.
+
+  Note also that the *larger* share is the ~34% of the phase in which the GPU
+  is idle. The staging-depth sweep below rules out too few batches in flight,
+  so that is most likely par2 feeding input slices, which no queue change
+  touches. Whoever picks this up should confirm that before assuming the queue
+  is the limit.
 
   **The cheap diagnostic has been run; depth is not the answer.** Two
   explanations fitted that number — too few batches in flight, or the copies
@@ -497,6 +517,13 @@ CPU-bound scan. Report both; either alone misleads.
 - ~~Windows CPU baseline.~~ Done — see §3 and `tests/bench/BASELINE.md`.
 - ~~A `--phase-split` mode for `parbench.py`.~~ Done — the scan-subtraction in
   §2 is now in the harness rather than done by hand.
+- **Decide what `PARPAR_GPU_STATS` and `PARPAR_GPU_STAGING` become.** Both are
+  `getenv`, which MSVC warns on (C4996), and an environment variable is the
+  wrong shape for anything meant to outlive an investigation. Once the staging
+  sweep is re-run after the queue change (above), each should either be deleted
+  or promoted to a real command-line option. `PARPAR_GPU_STATS` predates the
+  Vulkan backend and is read by the Metal controller too, so whatever is
+  decided applies to both backends.
 - Hybrid CPU+GPU split. `PAR2Proc` already supports it —
   `init()` takes `{backend, offset, size}` entries and
   `setCurrentSliceSize(size, sizeAlloc)` sets the split. Offsets must be

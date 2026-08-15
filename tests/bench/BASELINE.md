@@ -203,29 +203,43 @@ difference is file rewriting, not arithmetic.
 
 ### Where the GPU time actually goes
 
-From `PARPAR_GPU_STATS=1` on a 10 GiB delete-mode repair:
+From `PARPAR_GPU_STATS=1` on a 10 GiB delete-mode repair, typical of three runs:
 
 ```
-[GPU STATS] wall 3.27s | gpu 2.07s over 125 dispatches | stage 0.92s (10.0 GiB)
-            | lut+encode 0.05s | readback 0.15s
+[GPU STATS] wall 3.40s | gpu 2.05s (copy 0.44s + kernel 1.61s) over 125 dispatches
+            | host-stage 0.84s cpu (10.0 GiB) | lut+encode 0.06s | readback 0.20s
 ```
 
-The **kernel itself is 2.07 s — 1037 GB/s** — and PCIe staging is 0.92 s.
-10 GiB in 0.92 s is ~11.7 GB/s, about what PCIe 4.0 x16 delivers in practice,
-so staging is running at the link's speed rather than being wasted.
+Read those fields carefully; an earlier revision of this file misread two of
+them and drew the wrong conclusion:
 
-Note that `wall` here (3.27 s) is the backend's own view of the GF16 phase and
-is not the same quantity as the harness's 3.68 s reconstruct, which is
-`repair − verify` and also carries writing the recovered files. Against its own
-wall the kernel is **63%** of the phase.
+- **`gpu` is the whole command buffer**, copies *and* dispatch, because both are
+  recorded into it and the timestamps bracket the lot. It is now split. The
+  kernel alone is 1.61 s — **1333 GB/s** — and the PCIe copies are 0.44 s.
+- **`host-stage` is not the PCIe transfer.** It is the host-side `copy_cksum`
+  memcpy into the mapped staging buffer, and it is summed across the transfer
+  threads, so it is CPU time and an aggregate. It is not comparable to `wall`,
+  and dividing 10 GiB by it does not give a transfer rate.
 
-**Staging is now the obvious target**, which inverts the finding from Machine
-A: gotcha #6 in
-[docs/gpu-backend.md](../../docs/gpu-backend.md) records that parallelising
-staging bought almost nothing there, because on unified memory it was a memcpy
-against an already-saturated bus. Here it is real PCIe traffic and it is a
-third of the phase. Instrument before optimising, as ever — but this is where
-the remaining headroom is.
+`wall` (3.40 s) is the backend's own view of the GF16 phase, and is not the
+harness's 3.68 s reconstruct, which is `repair − verify` and also carries
+writing the recovered files.
+
+So the actual shape of the phase is:
+
+| | | share of wall |
+| --- | --- | --- |
+| kernel | 1.61 s | 47% |
+| PCIe copies | 0.44 s | 13% |
+| readback | 0.20 s | 6% |
+| everything else | ~1.15 s | 34% |
+
+**The copies are 21% of GPU-busy time and 13% of the phase** — real, but not
+the dominant cost, and that caps what moving them to a transfer queue can win.
+The larger share is the 34% during which the GPU is idle, and the staging-depth
+sweep in `docs/gpu-backend.md` §8 rules out "too few batches in flight" as the
+cause, so that time is most likely spent waiting for par2 to hand over input
+slices rather than anything the backend controls.
 
 ## Corrections to earlier estimates in this file
 
