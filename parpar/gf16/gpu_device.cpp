@@ -59,6 +59,7 @@ int gpu_default_device() {
 // Device memory scales linearly with this: each area holds a full input batch
 // plus its lookup tables, so raising it on a card with limited VRAM can push
 // allocation past what the device will give back.
+#if defined(PARPAR_METAL_SUPPORT) || defined(PARPAR_VULKAN_SUPPORT)
 static int gpu_staging_areas() {
 	const char* env = getenv("PARPAR_GPU_STAGING");
 	if(!env || !*env) return 2;
@@ -67,6 +68,7 @@ static int gpu_staging_areas() {
 	if(n > 8) n = 8;
 	return n;
 }
+#endif
 
 IPAR2ProcBackend* gpu_create_backend(int deviceId, size_t sliceSize,
                                      unsigned inputGrouping, int numThreads,

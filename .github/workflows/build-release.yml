@@ -4,10 +4,9 @@ on:
   push:
     branches:
     - 'turbo'
-    - 'feature/gpu-gf16'
-  # Lets the full artifact matrix be built from any branch on demand, without
-  # having to add each one above. Prefer this for one-off checks: a push to a
-  # listed branch rebuilds ten artifacts across four operating systems.
+  # Build the full artifact matrix from any branch on demand. Preferred over
+  # adding branches above: a push to a listed branch rebuilds ten artifacts
+  # across four operating systems.
   workflow_dispatch:
 
 jobs:
@@ -135,10 +134,16 @@ jobs:
 
     # NOTE: setting CFLAGS/CXXFLAGS suppresses autoconf's default "-g -O2",
     # so -O2 must be passed explicitly or the build ends up unoptimised.
+    # OBJCXXFLAGS matters as much as CXXFLAGS here: the Metal backend is
+    # Objective-C++, and automake compiles .mm with OBJCXX. Without the arch
+    # flag those objects build for the runner's native architecture while
+    # everything else is cross-compiled, and the link fails with undefined
+    # PAR2ProcMetal symbols for the target arch.
     - name: Build
       env:
         CFLAGS: -O3 ${{ matrix.xcxxflags }}
         CXXFLAGS: -O3 ${{ matrix.xcxxflags }}
+        OBJCXXFLAGS: -O3 ${{ matrix.xcxxflags }}
       run: |
         ./automake.sh
         ./configure
