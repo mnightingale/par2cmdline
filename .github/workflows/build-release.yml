@@ -4,6 +4,11 @@ on:
   push:
     branches:
     - 'turbo'
+    - 'feature/gpu-gf16'
+  # Lets the full artifact matrix be built from any branch on demand, without
+  # having to add each one above. Prefer this for one-off checks: a push to a
+  # listed branch rebuilds ten artifacts across four operating systems.
+  workflow_dispatch:
 
 jobs:
   build-check-linux:

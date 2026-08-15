@@ -172,14 +172,28 @@ listed in §1.
   --vn` emits the `uint32_t[]` directly, so unlike the Metal rule there is no
   `od`/`sed` step.
 
-> **The autotools wiring is written but has not been run.** There is no
-> autoconf, automake or WSL on the Windows benchmark machine, so it has been
-> reviewed against the Metal wiring but never executed. `.github/workflows/
-> build-check-linux.yml` runs `./automake.sh && ./configure && make` and will
-> exercise the disabled path (CI runners have no Vulkan headers, so it should
-> configure to `have_vulkan=no` and build CPU-only). **The enabled path is
-> still unproven** — the first person on a Linux box with the SDK should
-> expect to debug it.
+The autotools wiring has now been run, on macOS with `vulkan-headers` and
+`glslang` from Homebrew:
+
+```bash
+./configure --enable-vulkan CPPFLAGS=-I/opt/homebrew/include
+make && make check
+make distcheck DISTCHECK_CONFIGURE_FLAGS="--enable-vulkan CPPFLAGS=-I/opt/homebrew/include"
+```
+
+`glslangValidator` compiled the shader to `gf16_vulkan_spv.h`,
+`libparpar_gf16_vulkan.a` built, the suite stayed green, and the tarball built
+the backend from its own sources — which is the check that matters, since a
+plain `distcheck` auto-detects, finds no headers, silently builds CPU-only and
+passes regardless. That is the same class of bug as the missing
+`gf16_affine_avx10.h`.
+
+`.github/workflows/build-check-linux.yml` now installs `libvulkan-dev` and
+`glslang-tools` and configures with `--enable-vulkan`, so every push exercises
+the enabled path rather than the disabled one. It passes
+`DISTCHECK_CONFIGURE_FLAGS=--enable-vulkan` for the same reason as above. No
+GPU or driver is needed on the runner: the backend resolves Vulkan through
+`dlopen`, so headers and a shader compiler are enough to build and link it.
 
 ### The kernel
 
@@ -367,10 +381,11 @@ CPU-bound scan. Report both; either alone misleads.
   `gpu_test` bit-exact across all 20 shapes and both coefficient paths, the
   full suite green, multi-chunk `-m4` repair correct, and both
   create/repair backend combinations hash-identical.
-- **Verify the autotools build on Linux.** The wiring is written (§4) but has
-  never been executed — there is no autoconf on the Windows machine it was
-  written on. Both the enabled and disabled paths need a real run before the
-  backend can be called cross-platform.
+- ~~Verify the autotools build.~~ Done — §4. Both paths build, and Linux CI
+  now covers the enabled one on every push. Still unproven: the **Metal**
+  autotools path in CI, because GitHub's macOS runners may not ship the Metal
+  shader compiler (recent Xcode makes it a separate download). The macOS
+  workflow now reports whether it is present, so the next run will say.
 - **Staging is now the bottleneck worth attacking.** On the 4070 Ti a 10 GiB
   repair is 2.07 s of kernel against 0.92 s of PCIe staging, leaving the GPU
   busy ~63% of the GF16 phase — see `BASELINE.md`. Note this contradicts
