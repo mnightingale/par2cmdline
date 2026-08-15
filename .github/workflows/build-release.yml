@@ -297,7 +297,9 @@ jobs:
           sudo pkg install -y autoconf automake libtool
           ./automake.sh
           ./configure
-          make -j"$(nproc)"
+          # nproc is GNU coreutils and is not in the FreeBSD base system, so
+          # it expands to nothing here and make silently builds single-job.
+          make -j"$(sysctl -n hw.ncpu)"
           strip par2
 
     - name: Upload binary artifact
