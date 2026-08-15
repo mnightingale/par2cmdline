@@ -88,7 +88,12 @@
 	X(vkDestroyFence) \
 	X(vkResetFences) \
 	X(vkWaitForFences) \
-	X(vkGetFenceStatus)
+	X(vkGetFenceStatus) \
+	X(vkCreateQueryPool) \
+	X(vkDestroyQueryPool) \
+	X(vkGetQueryPoolResults) \
+	X(vkCmdResetQueryPool) \
+	X(vkCmdWriteTimestamp)
 
 // The library plus the entry points reachable without an instance.
 struct VulkanLib {

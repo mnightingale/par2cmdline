@@ -22,21 +22,23 @@
 //     dynamically, which spills it out of registers into scratch memory. That
 //     spill costs far more than the few predicated-off lanes in the last group.
 //
-//   * Workgroup size and the input batch size arrive as specialization
-//     constants, so one SPIR-V module serves whatever geometry the device
-//     turns out to support.
-
-// Upper bound on outputs handled by one workgroup. Bounds the accumulator
-// array so it stays in registers. Must match the host's value.
-#define GF16_MAX_OUTPUTS_PER_GROUP 8
+//   * The geometry arrives as specialization constants, so one SPIR-V module
+//     serves whatever the device turns out to support.
 
 // Entries in one coefficient's lookup table: 4 tables x 16 entries.
 #define GF16_LUT_ENTRIES 64
 
-// id 0: workgroup width. id 1: input slices per batch, which sizes the shared
-// table staging area below.
+// id 0: workgroup width.
+// id 1: input slices per batch.
+// id 2: outputs per workgroup.
+//
+// The last two size the shared table area between them, so the host can trade
+// them against whatever shared memory the device reports rather than against a
+// constant baked in here. Specializing the bound also keeps the accumulator
+// loops unrollable, which is what keeps acc[] in registers.
 layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 layout(constant_id = 1) const uint MAX_INPUTS = 16;
+layout(constant_id = 2) const uint MAX_OUTPUTS_PER_GROUP = 8;
 
 layout(std430, binding = 0) buffer Dst { uvec4 dst[]; };
 layout(std430, binding = 1) readonly buffer Src { uvec4 src[]; };
@@ -53,7 +55,7 @@ layout(push_constant) uniform Params {
 
 // Sized by a specialization constant, so a build that raises the batch size
 // does not silently overrun a fixed array.
-shared uint lut[GF16_MAX_OUTPUTS_PER_GROUP * MAX_INPUTS * GF16_LUT_ENTRIES];
+shared uint lut[MAX_OUTPUTS_PER_GROUP * MAX_INPUTS * GF16_LUT_ENTRIES];
 
 // One GF16 multiply via the nibble tables: 4 lookups, 3 XORs.
 uint lut_mul(uint base, uint v) {
@@ -95,21 +97,21 @@ void main() {
 	// Grid-stride over the slice so a fixed dispatch covers any slice size.
 	const uint stride = gl_NumWorkGroups.x * tgsize;
 	for(uint col = gl_WorkGroupID.x * tgsize + tid; col < p.vecPerSlice; col += stride) {
-		uvec4 acc[GF16_MAX_OUTPUTS_PER_GROUP];
-		for(uint o = 0u; o < GF16_MAX_OUTPUTS_PER_GROUP; o++)
+		uvec4 acc[MAX_OUTPUTS_PER_GROUP];
+		for(uint o = 0u; o < MAX_OUTPUTS_PER_GROUP; o++)
 			acc[o] = uvec4(0);
 
 		// Each input is read once and applied to every output in the group,
 		// which is what keeps this compute-bound rather than bandwidth-bound.
 		for(uint i = 0u; i < p.numInputs; i++) {
 			const uvec4 v = src[i * p.sliceStrideVec + col];
-			for(uint o = 0u; o < GF16_MAX_OUTPUTS_PER_GROUP; o++) {
+			for(uint o = 0u; o < MAX_OUTPUTS_PER_GROUP; o++) {
 				if(o < nOut)
 					acc[o] ^= lut_mul4((o * p.numInputs + i) * GF16_LUT_ENTRIES, v);
 			}
 		}
 
-		for(uint o = 0u; o < GF16_MAX_OUTPUTS_PER_GROUP; o++) {
+		for(uint o = 0u; o < MAX_OUTPUTS_PER_GROUP; o++) {
 			if(o < nOut) {
 				const uint idx = (outBase + o) * p.sliceStrideVec + col;
 				dst[idx] = (p.accumulate != 0u) ? (dst[idx] ^ acc[o]) : acc[o];

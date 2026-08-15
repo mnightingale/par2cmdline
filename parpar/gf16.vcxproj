@@ -290,6 +290,7 @@
     <ClCompile Include="gf16\gpu_device.cpp" />
     <ClCompile Include="gf16\vulkan_loader.cpp" Condition="'$(ParParVulkan)'=='true'" />
     <ClCompile Include="gf16\gpu_device_vulkan.cpp" Condition="'$(ParParVulkan)'=='true'" />
+    <ClCompile Include="gf16\controller_vulkan.cpp" Condition="'$(ParParVulkan)'=='true'" />
     <ClCompile Include="src\platform_warnings.c">
       <AdditionalOptions Condition="'$(PlatformToolset)|$(Platform)'=='ClangCL'">-mavx2 -mgfni %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
@@ -339,6 +340,7 @@
     <ClInclude Include="gf16\gpu_device.h" />
     <ClInclude Include="gf16\gpu_device_vulkan.h" Condition="'$(ParParVulkan)'=='true'" />
     <ClInclude Include="gf16\vulkan_loader.h" Condition="'$(ParParVulkan)'=='true'" />
+    <ClInclude Include="gf16\controller_vulkan.h" Condition="'$(ParParVulkan)'=='true'" />
   </ItemGroup>
   <!-- GLSL -> SPIR-V, emitted as a uint32_t[] header. The kernel that ships is
        therefore always the one built from gf16_vulkan.comp in this tree; the

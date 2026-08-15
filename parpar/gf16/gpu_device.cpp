@@ -7,6 +7,7 @@
 #endif
 #ifdef PARPAR_VULKAN_SUPPORT
 # include "gpu_device_vulkan.h"
+# include "controller_vulkan.h"
 #endif
 
 std::vector<GPUDeviceInfo> gpu_enumerate_devices() {
@@ -69,6 +70,21 @@ IPAR2ProcBackend* gpu_create_backend(int deviceId, size_t sliceSize,
 			if(devices[i].api == GPU_API_METAL) apiIndex++;
 
 		PAR2ProcMetal* be = new PAR2ProcMetal(apiIndex);
+		if(!be->isAvailable()) { delete be; return nullptr; }
+		be->setSliceSize(sliceSize);
+		be->setNumThreads(numThreads);
+		if(!be->init(inputGrouping)) { delete be; return nullptr; }
+		if(nameOut) *nameOut = info.name + " (" + be->getMethodName() + ")";
+		return be;
+	}
+#endif
+#ifdef PARPAR_VULKAN_SUPPORT
+	case GPU_API_VULKAN: {
+		int apiIndex = 0;
+		for(int i = 0; i < deviceId; i++)
+			if(devices[i].api == GPU_API_VULKAN) apiIndex++;
+
+		PAR2ProcVulkan* be = new PAR2ProcVulkan(apiIndex);
 		if(!be->isAvailable()) { delete be; return nullptr; }
 		be->setSliceSize(sliceSize);
 		be->setNumThreads(numThreads);
