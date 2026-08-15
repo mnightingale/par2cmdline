@@ -83,6 +83,12 @@ static HEDLEY_ALWAYS_INLINE void gf16_clmul_sha3_merge2(
 	poly16x8_t low1a, low2a, mid1a, mid2a, high1a, high2a; \
 	poly16x8_t low1b, low2b, mid1b, mid2b, high1b, high2b; \
 	poly16x8_t low1c, low2c, mid1c, mid2c, high1c, high2c
+/* LOCAL PATCH (not upstream ParPar): the GF16_MULADD_MULTI -> GF16_BLKMAC
+ * refactor renamed _dst to _dst1 and added dstScale in
+ * gf16_clmul_neon_base.h, and updated the __APPLE__ branch above, but not this
+ * one. Left as _dst it fails to compile on every non-Apple ARM target with
+ * SHA3 - aarch64 Linux and Windows ARM64. Drop this patch once ParPar carries
+ * the fix. */
 #define GF16_CLMUL_DO_PROCESS \
 	gf16_clmul_neon_round1(_src1+ptr*srcScale, &low1a, &low2a, &mid1a, &mid2a, &high1a, &high2a, coeff + 0); \
 	if(srcCount > 1) \
@@ -112,10 +118,10 @@ static HEDLEY_ALWAYS_INLINE void gf16_clmul_sha3_merge2(
 	} \
 	gf16_clmul_neon_reduction(&low1a, &low2a, mid1a, mid2a, &high1a, &high2a); \
 		\
-	uint8x16x2_t vb = vld2q_u8(_dst+ptr); \
+	uint8x16x2_t vb = vld2q_u8(_dst1+ptr*dstScale); \
 	vb.val[0] = veor3q_u8(vreinterpretq_u8_p16(low1a), vreinterpretq_u8_p16(low2a), vb.val[0]); \
 	vb.val[1] = veor3q_u8(vreinterpretq_u8_p16(high1a), vreinterpretq_u8_p16(high2a), vb.val[1]); \
-	vst2q_u8(_dst+ptr, vb)
+	vst2q_u8(_dst1+ptr*dstScale, vb)
 
 #endif // defined(__APPLE__)
 
