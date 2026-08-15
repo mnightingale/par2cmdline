@@ -83,17 +83,8 @@ jobs:
           par2
         retention-days: 5
 
-  # GPU-enabled Linux build, shipped alongside the static ones above rather
-  # than replacing them, because the two cannot be the same binary: the Vulkan
-  # backend resolves the driver with dlopen, which is unreliable from a fully
-  # static glibc binary - and running anywhere is the whole point of the static
-  # build. So there are two artifacts: a static CPU-only one that runs on old
-  # distros, and this, which needs a glibc at least as new as the runner's but
-  # can use a GPU.
-  #
-  # amd64 only. The headers are architecture-independent, but a cross-build
-  # would need them installed for the target multiarch, and Linux discrete GPUs
-  # are overwhelmingly amd64 - which is where the measured 5x lives.
+  # Dynamically linked: the Vulkan backend needs dlopen, which is unreliable
+  # from a static glibc binary.
   build-linux-gpu:
     needs:
     - build-check-linux
@@ -105,14 +96,11 @@ jobs:
     steps:
     - uses: actions/checkout@v7
 
-    # Headers and a shader compiler only; the driver is found at runtime, so
-    # neither a GPU nor the loader library is needed to build.
     - name: Install Vulkan build dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y libvulkan-dev glslang-tools
 
-    # Note the absence of -static, unlike the CPU builds. -s still strips.
     - name: Build
       env:
         LDFLAGS: -s
@@ -121,8 +109,6 @@ jobs:
         ./configure --enable-vulkan
         make -j"$(nproc)"
 
-    # Records what this binary actually needs at runtime, which is the whole
-    # reason it is a separate artifact.
     - name: Report runtime dependencies
       run: |
         ./par2 --list-gpus
@@ -212,11 +198,6 @@ jobs:
 
     # NOTE: setting CFLAGS/CXXFLAGS suppresses autoconf's default "-g -O2",
     # so -O2 must be passed explicitly or the build ends up unoptimised.
-    # OBJCXXFLAGS matters as much as CXXFLAGS here: the Metal backend is
-    # Objective-C++, and automake compiles .mm with OBJCXX. Without the arch
-    # flag those objects build for the runner's native architecture while
-    # everything else is cross-compiled, and the link fails with undefined
-    # PAR2ProcMetal symbols for the target arch.
     - name: Build
       env:
         CFLAGS: -O3 ${{ matrix.xcxxflags }}
@@ -268,39 +249,49 @@ jobs:
     needs:
     - build-check-freebsd
 
-    name: build-freebsd (${{ matrix.arch }})
+    name: build-freebsd (${{ matrix.artifact_arch }})
 
     strategy:
       matrix:
         include:
-        - arch: x86-64
-          artifact_arch: amd64
-        - arch: arm64
-          artifact_arch: aarch64
+        - artifact_arch: amd64
+          sysroot_path: amd64
+          triple: x86_64-unknown-freebsd15
+        - artifact_arch: aarch64
+          sysroot_path: arm64/aarch64
+          triple: aarch64-unknown-freebsd15
 
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v7
 
-    - name: Build on FreeBSD
-      uses: cross-platform-actions/action@v1.3.0
+    - name: Install cross toolchain
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang lld
+
+    - name: Fetch FreeBSD sysroot
+      run: |
+        mkdir -p sysroot
+        curl -fsSL "https://download.freebsd.org/releases/${{ matrix.sysroot_path }}/15.0-RELEASE/base.txz" \
+          | tar -xJ -C sysroot ./usr/include ./usr/lib ./lib
+
+    - name: Build
       env:
         LDFLAGS: -static -s
-      with:
-        operating_system: freebsd
-        version: '15.0'
-        architecture: ${{ matrix.arch }}
-        environment_variables: LDFLAGS
-        shell: sh
-        run: |
-          sudo pkg install -y autoconf automake libtool
-          ./automake.sh
-          ./configure
-          # nproc is GNU coreutils and is not in the FreeBSD base system, so
-          # it expands to nothing here and make silently builds single-job.
-          make -j"$(sysctl -n hw.ncpu)"
-          strip par2
+      run: |
+        SYSROOT="$PWD/sysroot"
+        ./automake.sh
+        ./configure --host=${{ matrix.triple }} \
+          CC="clang --target=${{ matrix.triple }} --sysroot=$SYSROOT -fuse-ld=lld" \
+          CXX="clang++ --target=${{ matrix.triple }} --sysroot=$SYSROOT -stdlib=libc++ -fuse-ld=lld"
+        make -j"$(nproc)"
+
+    - name: Verify the binary targets FreeBSD
+      run: |
+        file par2
+        file par2 | grep -q "FreeBSD" || { echo "not a FreeBSD binary"; exit 1; }
 
     - name: Upload binary artifact
       uses: actions/upload-artifact@v7

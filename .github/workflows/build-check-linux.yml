@@ -11,27 +11,17 @@ jobs:
     steps:
     - uses: actions/checkout@v7
 
-    # Headers and a shader compiler only. The Vulkan backend resolves the API
-    # at runtime with dlopen, so building it needs neither the loader library
-    # nor a GPU - which is why this can be exercised on a headless runner.
     - name: Install Vulkan build dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y libvulkan-dev glslang-tools
 
-    # --enable-vulkan rather than the default "auto": if detection regresses,
-    # CI must fail rather than quietly fall back to a CPU-only build and leave
-    # the GPU path untested again.
     - name: Build and test
       run: |
         ./automake.sh
         ./configure --enable-vulkan
         make -j"$(nproc)"
         make check
-        # distcheck re-runs configure inside the unpacked tarball, so pass the
-        # flag through as well: it proves the Vulkan sources and the .comp
-        # shader are actually distributed, which a default auto-detecting run
-        # would not (it would just build CPU-only and pass).
         make distcheck DISTCHECK_CONFIGURE_FLAGS=--enable-vulkan
 
     - name: Report detected backends

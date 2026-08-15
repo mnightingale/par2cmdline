@@ -14,17 +14,9 @@ jobs:
     - name: prepare
       run: brew install automake
 
-    # Recent Xcode ships the Metal shader compiler as a separately downloaded
-    # component rather than in the base install, so its presence is not a given.
-    # It is present on the runners as of 2026-08 (metal 32023.883), which is why
-    # the build below can require it.
     - name: Report Metal toolchain availability
       run: xcrun -sdk macosx metal --version
 
-    # --enable-metal rather than the default "auto": if the runner image drops
-    # the shader compiler, CI must fail loudly rather than quietly building
-    # CPU-only and leaving the Metal path uncovered. If that happens, this is
-    # the flag to relax - the backend itself is fine without it.
     - name: Build and test
       run: |
         ./automake.sh
