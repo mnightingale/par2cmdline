@@ -1,4 +1,5 @@
 #include "gpu_device.h"
+#include <cstdlib>
 #include "controller.h"
 
 #ifdef PARPAR_METAL_SUPPORT
@@ -47,6 +48,26 @@ int gpu_default_device() {
 	return best;
 }
 
+// Number of staging areas each GPU backend keeps in flight.
+//
+// Two is enough on unified memory, where staging is a memcpy into memory the
+// GPU already sees. On a discrete card it is a real PCIe transfer that has to
+// overlap compute, and more batches in flight may be needed to keep the device
+// fed - so this is tunable at runtime rather than requiring a rebuild to
+// investigate. See docs/gpu-backend.md.
+//
+// Device memory scales linearly with this: each area holds a full input batch
+// plus its lookup tables, so raising it on a card with limited VRAM can push
+// allocation past what the device will give back.
+static int gpu_staging_areas() {
+	const char* env = getenv("PARPAR_GPU_STAGING");
+	if(!env || !*env) return 2;
+	int n = atoi(env);
+	if(n < 2) n = 2;   // canAdd/addInput assume at least one spare area
+	if(n > 8) n = 8;
+	return n;
+}
+
 IPAR2ProcBackend* gpu_create_backend(int deviceId, size_t sliceSize,
                                      unsigned inputGrouping, int numThreads,
                                      std::string* nameOut) {
@@ -69,7 +90,7 @@ IPAR2ProcBackend* gpu_create_backend(int deviceId, size_t sliceSize,
 		for(int i = 0; i < deviceId; i++)
 			if(devices[i].api == GPU_API_METAL) apiIndex++;
 
-		PAR2ProcMetal* be = new PAR2ProcMetal(apiIndex);
+		PAR2ProcMetal* be = new PAR2ProcMetal(apiIndex, gpu_staging_areas());
 		if(!be->isAvailable()) { delete be; return nullptr; }
 		be->setSliceSize(sliceSize);
 		be->setNumThreads(numThreads);
@@ -84,7 +105,7 @@ IPAR2ProcBackend* gpu_create_backend(int deviceId, size_t sliceSize,
 		for(int i = 0; i < deviceId; i++)
 			if(devices[i].api == GPU_API_VULKAN) apiIndex++;
 
-		PAR2ProcVulkan* be = new PAR2ProcVulkan(apiIndex);
+		PAR2ProcVulkan* be = new PAR2ProcVulkan(apiIndex, gpu_staging_areas());
 		if(!be->isAvailable()) { delete be; return nullptr; }
 		be->setSliceSize(sliceSize);
 		be->setNumThreads(numThreads);

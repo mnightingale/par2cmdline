@@ -390,6 +390,52 @@ CPU-bound scan. Report both; either alone misleads.
   repair is 2.07 s of kernel against 0.92 s of PCIe staging, leaving the GPU
   busy ~63% of the GF16 phase — see `BASELINE.md`. Note this contradicts
   gotcha #6, which was measured on unified memory where staging was a memcpy.
+
+  **Run the cheap diagnostic before restructuring anything.** Two explanations
+  fit that number: too few batches in flight, or the copies and the kernel
+  sharing one engine. `PARPAR_GPU_STAGING` distinguishes them without a
+  rebuild:
+
+  ```bash
+  for n in 2 3 4 6 8; do
+    PARPAR_GPU_STAGING=$n PARPAR_GPU_STATS=1 par2 repair --gpu=auto -q bench.par2
+  done
+  ```
+
+  The stats line ends with `staging areas N`, so each result carries the depth
+  that produced it. If `gpu` time rises as a share of `wall`, depth was the
+  limit and this is the whole fix. If nothing moves, it is engine
+  serialisation, and the fix is the queue restructuring below.
+
+  Device memory scales linearly with the depth, so on a 12 GB card a large
+  `-m` and a high depth can exhaust VRAM — the run will fall back to the CPU
+  rather than fail, which is easy to mistake for "no improvement". Check the
+  reported method is still the GPU.
+
+- **If depth is not the answer: give the copies their own queue.** The device
+  is currently created with a single compute queue
+  (`controller_vulkan.cpp:309-335`, `queueCount = 1`), and `run_kernel` puts
+  both `vkCmdCopyBuffer` calls and the `vkCmdDispatch` in **one command buffer
+  on that one queue**. NVIDIA runs copies on the compute engine unless they are
+  submitted to a transfer-only queue family, which is why staging and kernel
+  time add rather than overlap.
+
+  The fix is a transfer-only family (`TRANSFER_BIT` without `COMPUTE_BIT`),
+  signalling a semaphore the compute submit waits on, with the buffers shared
+  `CONCURRENT` between the two families — falling back to today's single-queue
+  path where no such family exists, which is what MoltenVK and integrated GPUs
+  report.
+
+  **Do not disturb the barrier in `run_kernel`.** Its first scope covers
+  everything previously submitted to the queue, and that is what serialises
+  successive dispatches so batches *accumulate* into the output rather than
+  racing (the kernel does `dst ^= acc`). Only the copies move; the dispatches
+  must stay ordered. Note the copies already sit *before* that barrier, so the
+  structure does not forbid overlap — the single engine does.
+
+  This is synchronisation code where a mistake corrupts repairs silently rather
+  than crashing. Verify with `gpu_test` **and** the `-m4` multi-chunk repair
+  from §7 before trusting any timing from it.
 - ~~`tests/gpu_test.vcxproj` for the Windows build.~~ Done — see §6.
 - ~~Windows CPU baseline.~~ Done — see §3 and `tests/bench/BASELINE.md`.
 - ~~A `--phase-split` mode for `parbench.py`.~~ Done — the scan-subtraction in

@@ -10,6 +10,9 @@ parpar/gf16/gf16_metal.metallib
 # generated Vulkan SPIR-V module (built from gf16_vulkan.comp)
 parpar/gf16/gf16_vulkan_spv.h
 
+# distcheck output
+par2cmdline-turbo-*.tar.gz
+
 # compilation output
 par2
 libpar2.a

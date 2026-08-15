@@ -406,23 +406,27 @@ const char* PAR2ProcVulkan::getMethodName() const {
 	return "Vulkan (nibble LUT)";
 }
 
-static void gpu_stats_report(double wall) {
+// `areas` is reported so a run's numbers carry the staging depth that produced
+// them - the figure PARPAR_GPU_STAGING varies.
+static void gpu_stats_report(double wall, unsigned areas) {
 	const double s = 1e-9;
 	fprintf(stderr,
 		"[GPU STATS] wall %.2fs | gpu %.2fs over %llu dispatches | "
-		"stage %.2fs (%.1f GiB) | lut+encode %.2fs | readback %.2fs\n",
+		"stage %.2fs (%.1f GiB) | lut+encode %.2fs | readback %.2fs | "
+		"staging areas %u\n",
 		wall,
 		g_stats.gpuNs.load() * s, (unsigned long long)g_stats.dispatches.load(),
 		g_stats.stageNs.load() * s,
 		g_stats.stageBytes.load() / 1073741824.0,
 		g_stats.encodeNs.load() * s,
-		g_stats.readbackNs.load() * s);
+		g_stats.readbackNs.load() * s,
+		areas);
 }
 
 void PAR2ProcVulkan::_deinit() {
 	drainTransfers();
 	if(gpu_stats_enabled() && g_stats.wallStart > 0) {
-		gpu_stats_report(now_s() - g_stats.wallStart);
+		gpu_stats_report(now_s() - g_stats.wallStart, getStagingAreas());
 		g_stats.wallStart = 0;
 	}
 	if(impl->device == VK_NULL_HANDLE) return;
