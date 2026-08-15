@@ -51,7 +51,9 @@
        would silently reduce it to testing nothing. controller_vulkan.h keeps
        Vulkan behind a pimpl, so no SDK include path is needed here. -->
   <PropertyGroup>
-    <ParParVulkan Condition="'$(ParParVulkan)'=='' And Exists('$(VULKAN_SDK)\Include\vulkan\vulkan.h') And Exists('$(VULKAN_SDK)\Bin\glslangValidator.exe')">true</ParParVulkan>
+    <ParParGlslang Condition="'$(ParParGlslang)'=='' And Exists('$(VULKAN_SDK)\Bin\glslangValidator.exe')">$(VULKAN_SDK)\Bin\glslangValidator.exe</ParParGlslang>
+    <ParParGlslang Condition="'$(ParParGlslang)'=='' And Exists('$(VULKAN_SDK)\Bin\glslang.exe')">$(VULKAN_SDK)\Bin\glslang.exe</ParParGlslang>
+    <ParParVulkan Condition="'$(ParParVulkan)'=='' And Exists('$(VULKAN_SDK)\Include\vulkan\vulkan.h') And '$(ParParGlslang)'!=''">true</ParParVulkan>
     <ParParVulkan Condition="'$(ParParVulkan)'==''">false</ParParVulkan>
     <ParParVulkanDefines Condition="'$(ParParVulkan)'=='true'">PARPAR_VULKAN_SUPPORT;</ParParVulkanDefines>
   </PropertyGroup>

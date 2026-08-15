@@ -75,7 +75,12 @@
        dynamically; nothing here creates a link-time dependency.
        Force it off with -property:ParParVulkan=false. -->
   <PropertyGroup>
-    <ParParVulkan Condition="'$(ParParVulkan)'=='' And Exists('$(VULKAN_SDK)\Include\vulkan\vulkan.h') And Exists('$(VULKAN_SDK)\Bin\glslangValidator.exe')">true</ParParVulkan>
+    <!-- The LunarG SDK ships glslangValidator.exe; Khronos' own glslang
+         release ships only glslang.exe. They take identical flags, so accept
+         whichever is present rather than requiring the SDK. -->
+    <ParParGlslang Condition="'$(ParParGlslang)'=='' And Exists('$(VULKAN_SDK)\Bin\glslangValidator.exe')">$(VULKAN_SDK)\Bin\glslangValidator.exe</ParParGlslang>
+    <ParParGlslang Condition="'$(ParParGlslang)'=='' And Exists('$(VULKAN_SDK)\Bin\glslang.exe')">$(VULKAN_SDK)\Bin\glslang.exe</ParParGlslang>
+    <ParParVulkan Condition="'$(ParParVulkan)'=='' And Exists('$(VULKAN_SDK)\Include\vulkan\vulkan.h') And '$(ParParGlslang)'!=''">true</ParParVulkan>
     <ParParVulkan Condition="'$(ParParVulkan)'==''">false</ParParVulkan>
     <ParParVulkanDefines Condition="'$(ParParVulkan)'=='true'">PARPAR_VULKAN_SUPPORT;</ParParVulkanDefines>
     <IncludePath Condition="'$(ParParVulkan)'=='true'">$(VULKAN_SDK)\Include;$(IncludePath)</IncludePath>
@@ -348,7 +353,7 @@
   <ItemGroup>
     <CustomBuild Include="gf16\gf16_vulkan.comp" Condition="'$(ParParVulkan)'=='true'">
       <FileType>Document</FileType>
-      <Command>"$(VULKAN_SDK)\Bin\glslangValidator.exe" -V --target-env vulkan1.1 --vn gf16_vulkan_spv -o "%(RootDir)%(Directory)gf16_vulkan_spv.h" "%(FullPath)"</Command>
+      <Command>"$(ParParGlslang)" -V --target-env vulkan1.1 --vn gf16_vulkan_spv -o "%(RootDir)%(Directory)gf16_vulkan_spv.h" "%(FullPath)"</Command>
       <Outputs>%(RootDir)%(Directory)gf16_vulkan_spv.h</Outputs>
       <Message>Compiling %(Filename)%(Extension) to SPIR-V</Message>
     </CustomBuild>
