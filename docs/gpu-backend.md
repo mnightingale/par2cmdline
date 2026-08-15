@@ -245,12 +245,23 @@ msbuild -property:PlatformToolset=v145 -property:Configuration=UnitTests-Release
 `parpar/hasher.vcxproj` are upstream ParPar files and pin `v143`; every
 par2cmdline project pins `v145`. Whichever toolset the machine actually has,
 both halves must be forced onto it or the build dies with MSB8020 on the two
-parpar projects only. On the benchmark machine (VS 18 Community) only `v145` is
-installed — neither `v143` nor `ClangCL` — so `v145` is what the commands above
-use. Do **not** "fix" this by editing the pin inside `parpar/`: those files go
-upstream. `v145` compiles the SIMD sources fine; the `-mavx2`-style
-`AdditionalOptions` in those projects are all conditioned on `ClangCL` and are
-simply skipped.
+parpar projects only. Do **not** "fix" this by editing the pin inside
+`parpar/`: those files go upstream. `v145` compiles the SIMD sources fine; the
+`-mavx2`-style `AdditionalOptions` in those projects are all conditioned on
+`ClangCL` and are simply skipped.
+
+On the benchmark machine (VS 18 Community) the registered toolset is `v145`.
+Note that **installing the v143 compiler is not enough to drop the override** —
+the compiler binaries land in `VC\Tools\MSVC\14.44.x`, but `PlatformToolset`
+resolves against
+
+```
+MSBuild\Microsoft\VC\v180\Platforms\x64\PlatformToolsets\
+```
+
+which lists only `v145` unless the VS 2022 build tools register themselves
+there. Check that directory before concluding a toolset is available; the
+presence of a `VC\Tools\MSVC` directory says nothing about it.
 
 Already done for you:
 
