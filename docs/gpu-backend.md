@@ -11,17 +11,27 @@ free of par2cmdline-specific assumptions and must not add hard build deps.
 
 ## 1. What exists
 
-Metal backend, complete and working:
+Metal and Vulkan backends, both complete and working:
+
+| Piece | Metal | Vulkan |
+| --- | --- | --- |
+| Compute kernel | `parpar/gf16/gf16_metal.metal` | `parpar/gf16/gf16_vulkan.comp` |
+| Backend | `parpar/gf16/controller_metal.{h,mm}` | `parpar/gf16/controller_vulkan.{h,cpp}` |
+| Device enumeration | `parpar/gf16/gpu_device_metal.{h,mm}` | `parpar/gf16/gpu_device_vulkan.{h,cpp}` |
+| Runtime API loader | — | `parpar/gf16/vulkan_loader.{h,cpp}` |
+
+Shared between them:
 
 | Piece | File |
 | --- | --- |
-| Compute kernel | `parpar/gf16/gf16_metal.metal` |
-| Backend | `parpar/gf16/controller_metal.{h,mm}` |
-| Device enumeration | `parpar/gf16/gpu_device_metal.{h,mm}` |
 | API-agnostic device layer + factory | `parpar/gf16/gpu_device.{h,cpp}` |
 | Correctness test | `src/gpu_test.cpp` |
 | Benchmark harness | `tests/bench/parbench.py` |
 | Measured results | `tests/bench/BASELINE.md` |
+
+`vulkan_loader` is a fourth file that this document's original plan did not
+list. It exists because both the enumeration and the backend need the same
+entry-point tables, and duplicating them would guarantee drift.
 
 CLI: `--gpu=auto|off|<id>` and `--list-gpus`. Default is `auto`, which falls
 back to the CPU silently when no usable device exists. A GPU is never required.
@@ -82,31 +92,40 @@ The Apple result is about *bandwidth ratio*, not about GPU versus CPU compute.
 Apple Silicon is the worst case: one memory pool shared by both processors, so
 the ratio is 1:1 and there is nothing to win. A discrete GPU changes that.
 
-**The Windows CPU baseline has now been measured** (Ryzen 7 5800X, 8c/16t,
-DDR4-3600; RTX 4070 Ti). Full numbers in `tests/bench/BASELINE.md`, machine B:
+**This has now been measured on both machines.** Full numbers in
+`tests/bench/BASELINE.md`; the 10 GiB delete-mode reconstruct phase:
 
-| | Bandwidth |
-| --- | --- |
-| M2 Pro, shared | ~200 GB/s |
-| **RTX 4070 Ti** | **~504 GB/s** |
-| **This CPU, measured GF16** | **107 GB/s** |
-
-The earlier "typical desktop CPU ~50–90 GB/s" guess in this section was low:
-the reconstruct loop re-reads inputs out of cache, not DRAM, so it runs well
-above the 57.6 GB/s the memory controller could sustain. That revises the
-expected reconstruct-phase speedup **down from 5–7x to a ceiling of ~4.7x**
-(504/107), before staging and readback are paid for.
-
-End-to-end is bounded far harder, because the scan does not accelerate:
-
-| Mode | Repair (CPU) | of which scan | Best possible end-to-end |
+| Machine | CPU | GPU | Ratio |
 | --- | --- | --- | --- |
-| delete | 29.72 s | 9.60 s | 3.10x (infinitely fast GPU) |
-| corrupt | 56.97 s | 27.22 s | 2.09x (infinitely fast GPU) |
+| M2 Pro, unified | 187 GB/s | 189 GB/s | 0.95x on repair |
+| **5800X + RTX 4070 Ti** | **113 GB/s** | **583 GB/s** | **5.15x** |
 
-At a realistic 4.7x on the reconstruct phase that becomes ~2.14x and ~1.69x.
-**Treat any end-to-end result much above 2x on this machine as suspect**, most
-likely the scan being excluded from one side of the comparison.
+End-to-end is bounded far harder, because the scan does not accelerate at all:
+
+| Mode | Repair (CPU) | Repair (GPU) | of which scan | End-to-end |
+| --- | --- | --- | --- | --- |
+| delete | 28.87 s | 12.79 s | ~9.5 s | 2.26x |
+| corrupt | 57.74 s | 42.33 s | ~29 s | 1.36x |
+
+Creation is 1.74x. Even an infinitely fast reconstruct would only reach 3.13x
+in delete mode and 1.90x in corrupt, so most of the available headroom is
+already taken.
+
+Two estimates in earlier revisions of this section were wrong, and the way they
+were wrong is worth keeping:
+
+- A "typical desktop CPU ~50–90 GB/s" guess, used to predict 5–7x. The CPU
+  actually measures 113 GB/s, because the reconstruct loop re-reads inputs out
+  of cache rather than DRAM.
+- A "ceiling of ~4.7x", derived as 504 GB/s VRAM ÷ 107 GB/s CPU. **That is not
+  a valid ceiling**: neither figure is memory bandwidth, both are multiply-add
+  metrics inflated by cache reuse. The measured 5.15x exceeds it, and the
+  kernel's own rate of 1037 GB/s exceeds the card's 504 GB/s VRAM bandwidth for
+  the same reason.
+
+Do not sanity-check a result against a bandwidth ratio. Check instead that the
+**scan time is unchanged between backends** — if it is, the gain is coming from
+the phase the backend actually controls.
 
 ### What differs from Apple, and matters
 
@@ -127,28 +146,38 @@ likely the scan being excluded from one side of the comparison.
 
 ---
 
-## 4. What to implement
+## 4. How the Vulkan backend is built
 
-Add `GPU_API_VULKAN` support alongside Metal. The pattern is already in place;
-follow it rather than inventing a new one.
+`GPU_API_VULKAN` sits alongside Metal and follows the same pattern. Files as
+listed in §1.
 
-### Files to create
+### Build wiring — done
 
-| File | Mirrors |
-| --- | --- |
-| `parpar/gf16/gpu_device_vulkan.{h,cpp}` | `gpu_device_metal.{h,mm}` |
-| `parpar/gf16/controller_vulkan.{h,cpp}` | `controller_metal.{h,mm}` |
-| `parpar/gf16/gf16_vulkan.comp` | `gf16_metal.metal` |
+- `parpar/gf16/gpu_device.cpp` — calls `gpu_vulkan_enumerate()` and has the
+  `GPU_API_VULKAN` case in `gpu_create_backend()`.
+- `parpar/gf16.vcxproj` — sources added, gated on a `ParParVulkan` property
+  that auto-detects the Vulkan SDK. Without the SDK the rest of the project
+  still builds and Vulkan simply reports no devices. Force it off with
+  `-property:ParParVulkan=false`.
+- `tests/gpu_test.vcxproj` — same detection, so the test picks the same
+  backend the library was built with.
 
-### Files to edit
+### Build wiring — NOT done
 
-- `parpar/gf16/gpu_device.cpp` — call `gpu_vulkan_enumerate()` and add a
-  `GPU_API_VULKAN` case to `gpu_create_backend()`. Both sites already have the
-  `#ifdef PARPAR_VULKAN_SUPPORT` shape to copy from Metal.
-- `configure.ac` — a `--disable-vulkan` block mirroring the Metal one.
-- `Makefile.am` — a conditional archive mirroring `libparpar_gf16_metal.a`.
-- `parpar/gf16.vcxproj` — add the new sources. **This is the build that
-  matters on Windows**; autotools is not used there.
+**`configure.ac` and `Makefile.am` have not been touched**, so the autotools
+build does not compile the Vulkan backend at all. On Linux, `./configure &&
+make` currently produces a CPU-only binary. Needed there:
+
+- `configure.ac` — a `--disable-vulkan` block mirroring the Metal one, probing
+  for the Vulkan headers and `glslangValidator`.
+- `Makefile.am` — a conditional archive mirroring `libparpar_gf16_metal.a`,
+  plus a `gf16_vulkan_spv.h` rule mirroring the `gf16_metal_lib.h` one. The
+  MSVC build generates that header with `glslangValidator --vn`, which emits
+  the `uint32_t[]` directly and needs no `bin2c` step.
+
+This is the largest remaining gap and the reason the backend is Windows-only
+today. Nothing in the backend itself is platform-specific — `vulkan_loader.cpp`
+already has the `dlopen` path — so this is build plumbing rather than porting.
 
 ### The kernel
 
@@ -221,9 +250,16 @@ These cost real debugging time. Do not rediscover them.
    and waits, then waits on an empty command buffer for the GPU, before freeing
    anything.
 
-6. **Parallelising staging was not the win it looked like.** It took 10 GiB
-   repair from 22.72 s to 22.34 s. The GPU was already 91% utilised; there was
-   no host-side gap to close. Instrument before optimising.
+6. **Parallelising staging was not the win it looked like** — *on unified
+   memory*. It took 10 GiB repair from 22.72 s to 22.34 s. The GPU was already
+   91% utilised; there was no host-side gap to close. Instrument before
+   optimising.
+
+   **This does not carry over to discrete hardware.** There staging is a real
+   PCIe transfer rather than a memcpy into memory the GPU already sees. On the
+   4070 Ti a 10 GiB repair spends 0.92 s staging against 2.07 s of kernel, so
+   the GPU is busy only ~63% of the GF16 phase. The lesson survives, the
+   conclusion does not: instrument on the machine in front of you.
 
 ---
 
@@ -325,7 +361,17 @@ CPU-bound scan. Report both; either alone misleads.
 
 ## 8. Open items
 
-- Vulkan backend (this handoff).
+- ~~Vulkan backend.~~ Done — see §1. Verified against the checklist in §7:
+  `gpu_test` bit-exact across all 20 shapes and both coefficient paths, the
+  full suite green, multi-chunk `-m4` repair correct, and both
+  create/repair backend combinations hash-identical.
+- **Autotools support for the Vulkan backend** — `configure.ac` and
+  `Makefile.am`, see §4. Until then the backend builds on Windows only, which
+  is a packaging gap rather than a porting one.
+- **Staging is now the bottleneck worth attacking.** On the 4070 Ti a 10 GiB
+  repair is 2.07 s of kernel against 0.92 s of PCIe staging, leaving the GPU
+  busy ~63% of the GF16 phase — see `BASELINE.md`. Note this contradicts
+  gotcha #6, which was measured on unified memory where staging was a memcpy.
 - ~~`tests/gpu_test.vcxproj` for the Windows build.~~ Done — see §6.
 - ~~Windows CPU baseline.~~ Done — see §3 and `tests/bench/BASELINE.md`.
 - ~~A `--phase-split` mode for `parbench.py`.~~ Done — the scan-subtraction in

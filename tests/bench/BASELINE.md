@@ -1,14 +1,20 @@
-# CPU baseline (pre-GPU)
+# GF16 throughput baselines
 
-Reference numbers for the CPU GF16 path, captured before any GPU backend
-existed. Re-measure with `parbench.py` on the same machine when comparing.
+Measured CPU and GPU numbers for the GF16 path. Re-measure with `parbench.py`
+on the same machine when comparing.
 
 Two machines are recorded. **Never compare across them** — the whole point of
-[the Vulkan work](../../docs/gpu-backend.md) is that the CPU:GPU bandwidth
-ratio differs by platform, so each machine needs its own CPU baseline.
+[the Vulkan work](../../docs/gpu-backend.md) is that the CPU:GPU ratio depends
+entirely on the platform, so each machine needs its own CPU baseline measured
+alongside its GPU result.
 
-- [Machine A — Apple M2 Pro](#machine-a--apple-m2-pro-macos) (Metal backend)
-- [Machine B — Ryzen 7 5800X + RTX 4070 Ti](#machine-b--ryzen-7-5800x--rtx-4070-ti-windows) (Vulkan target)
+- [Machine A — Apple M2 Pro](#machine-a--apple-m2-pro-macos) (Metal, unified memory)
+- [Machine B — Ryzen 7 5800X + RTX 4070 Ti](#machine-b--ryzen-7-5800x--rtx-4070-ti-windows) (Vulkan, discrete)
+
+The headline: on unified memory the GPU is **0.95x** on repair, on a discrete
+card it is **5.15x** on the reconstruct phase. That difference is the entire
+argument for the Vulkan backend, and neither number generalises to the other
+platform.
 
 ---
 
@@ -131,8 +137,8 @@ memory.
 
 # Machine B — Ryzen 7 5800X + RTX 4070 Ti (Windows)
 
-The Vulkan target. **CPU only** — measured before any Vulkan code existed, so
-this is the number the GPU backend must beat on this machine.
+CPU against the Vulkan backend, measured back to back in one run so the
+speedup columns compare like with like.
 
 ## Machine
 
@@ -143,7 +149,7 @@ this is the number the GPU backend must beat on this machine.
 | Memory | 32 GiB DDR4-3600, dual channel (~57.6 GB/s theoretical) |
 | Storage | Samsung 980 PRO 2 TB NVMe |
 | OS | Windows 11 Pro 26200 |
-| Build | `feature/gpu-gf16`, MSVC `v145`, `Release\|x64`, `par2 --list-gpus` reports none |
+| Build | `feature/gpu-gf16`, MSVC `v145`, `Release\|x64`, Vulkan SDK 1.4.357.0 |
 
 ## Results
 
@@ -152,72 +158,106 @@ damage, `-t` default (16), **warm page cache**, 3 repetitions. Block size
 5,368,712 B; 2000 source and 300 recovery blocks; 200 blocks reconstructed.
 
 Each repetition times `par2 verify -q` and `par2 repair -q` against the *same*
-damage state, so the subtraction is valid. Medians of 3:
+damage state, so the subtraction is valid. Scan and reconstruct are medians of
+3; total is the best of 3.
 
-| Mode | Scan (`verify`) | Reconstruct (`repair − verify`) | Total (`repair`, best) |
-| --- | --- | --- | --- |
-| delete | 9.60 s | **20.12 s** | 29.72 s |
-| corrupt | 27.22 s | 30.41 s | 56.97 s |
+| Mode | Backend | Scan | Reconstruct | Total | Speedup |
+| --- | --- | --- | --- | --- | --- |
+| delete | CPU | 9.90 s | 18.97 s | 28.87 s | — |
+| delete | **GPU** | 9.22 s | **3.68 s** | **12.79 s** | **5.15x** reconstruct, 2.26x total |
+| corrupt | CPU | 28.18 s | 34.13 s | 57.74 s | — |
+| corrupt | **GPU** | 30.39 s | **14.81 s** | **42.33 s** | 2.31x reconstruct, 1.36x total |
 
-Creation was 34.54 s.
+Creation: 31.31 s CPU, 17.95 s GPU — **1.74x**.
 
-Per-run reconstruct, showing the spread:
+Per-run reconstruct, showing the spread. The GPU is markedly more consistent
+than the CPU, which is what a dedicated processor with no other tenants looks
+like:
 
-| Mode | run 1 | run 2 | run 3 | median |
-| --- | --- | --- | --- | --- |
-| delete | 20.12 s | 20.44 s | 20.05 s | 20.12 s |
-| corrupt | 30.41 s | 32.01 s | 28.56 s | 30.41 s |
+| Mode | Backend | run 1 | run 2 | run 3 | median |
+| --- | --- | --- | --- | --- | --- |
+| delete | CPU | 18.97 s | 22.62 s | 18.09 s | 18.97 s |
+| delete | GPU | 3.57 s | 3.68 s | 3.70 s | 3.68 s |
+| corrupt | CPU | 29.56 s | 34.93 s | 34.13 s | 34.13 s |
+| corrupt | GPU | 14.95 s | 14.75 s | 14.81 s | 14.81 s |
+
+**The scan does not accelerate, and the measurement confirms it**: 9.90 s vs
+9.22 s in delete mode, 28.18 s vs 30.39 s in corrupt. Any apparent scan
+difference is run-to-run noise. This is the whole reason the phase split
+exists.
 
 ## GF16 throughput
 
 2000 × 200 × 5,368,712 = 2147 GB of multiply-add, so:
 
-- **CPU: 107 GB/s** (2147 GB / 20.12 s median, delete mode)
+- **CPU: 113 GB/s** (2147 GB / 18.97 s median, delete mode)
+- **GPU: 583 GB/s** (2147 GB / 3.68 s median, delete mode)
 
-**Use the delete-mode figure.** In corrupt mode `repair` does substantial work
+**Use the delete-mode figures.** In corrupt mode `repair` does substantial work
 that `verify` does not — rewriting repaired blocks back into the damaged files
-in place — so the difference is not purely GF16 and the apparent 71 GB/s is an
-underestimate. That mode is also visibly noisier (28.6–32.0 s across three runs,
-against 20.1–20.4 s for delete).
+in place — so the difference is not purely GF16. That work does not accelerate,
+which is why the corrupt-mode ratio (2.31x) is so much lower than delete's
+5.15x rather than because the kernel is slower. It shows up directly: GPU
+reconstruct is 3.68 s in delete mode and 14.81 s in corrupt, and the ~11 s
+difference is file rewriting, not arithmetic.
 
-## What this means for the Vulkan backend
+### Where the GPU time actually goes
 
-For reference, Machine A's CPU measured 187 GB/s, so this CPU is ~0.57x of it —
-but that comparison is not the useful one. What matters is the local ratio:
+From `PARPAR_GPU_STATS=1` on a 10 GiB delete-mode repair:
 
-| | Bandwidth |
-| --- | --- |
-| RTX 4070 Ti (VRAM) | ~504 GB/s |
-| This CPU, measured GF16 | 107 GB/s |
-| This CPU, theoretical DRAM | ~57.6 GB/s |
+```
+[GPU STATS] wall 3.27s | gpu 2.07s over 125 dispatches | stage 0.92s (10.0 GiB)
+            | lut+encode 0.05s | readback 0.15s
+```
 
-The measured 107 GB/s exceeding DRAM bandwidth is expected and not an error:
-the GF16 work metric counts multiply-add bytes, and the reconstruct loop re-reads
-each input slice against many outputs out of cache rather than DRAM. That is
-also precisely why the CPU is not as far behind as the DRAM figure suggests.
+The **kernel itself is 2.07 s — 1037 GB/s** — and PCIe staging is 0.92 s.
+10 GiB in 0.92 s is ~11.7 GB/s, about what PCIe 4.0 x16 delivers in practice,
+so staging is running at the link's speed rather than being wasted.
 
-So the honest ceiling for the reconstruct phase is **~4.7x** (504/107), not the
-5–7x [docs/gpu-backend.md](../../docs/gpu-backend.md) estimated from a generic
-"50–90 GB/s desktop CPU" — that guess was low for this part. Real gains will be
-below the ceiling once PCIe staging and readback are paid for.
+Note that `wall` here (3.27 s) is the backend's own view of the GF16 phase and
+is not the same quantity as the harness's 3.68 s reconstruct, which is
+`repair − verify` and also carries writing the recovered files. Against its own
+wall the kernel is **63%** of the phase.
 
-End-to-end is bounded much harder, because the scan does not accelerate at all:
+**Staging is now the obvious target**, which inverts the finding from Machine
+A: gotcha #6 in
+[docs/gpu-backend.md](../../docs/gpu-backend.md) records that parallelising
+staging bought almost nothing there, because on unified memory it was a memcpy
+against an already-saturated bus. Here it is real PCIe traffic and it is a
+third of the phase. Instrument before optimising, as ever — but this is where
+the remaining headroom is.
 
-| Mode | Repair now | Reconstruct at 4.7x | Repair then | End-to-end |
-| --- | --- | --- | --- | --- |
-| delete | 29.72 s | 4.3 s | 13.9 s | 2.14x |
-| corrupt | 56.97 s | 6.5 s | 33.7 s | 1.69x |
+## Corrections to earlier estimates in this file
 
-And with an *infinitely* fast GPU the delete-mode repair still cannot go below
-the 9.60 s scan — a hard ceiling of 3.10x. **Any end-to-end claim above ~2x on
-this machine deserves a second look.** Report the reconstruct phase separately;
-it is the only number the backend actually controls.
+Two claims recorded here before the backend existed did not survive contact
+with the measurement, and are worth stating explicitly rather than quietly
+editing away:
+
+**The "~4.7x ceiling" was not a real ceiling.** It came from dividing the GPU's
+504 GB/s VRAM bandwidth by the CPU's 107 GB/s measured GF16 rate. That is not a
+valid comparison: neither number is memory bandwidth. Both are multiply-add
+metrics inflated by cache reuse — the same reason this CPU appears to exceed its
+57.6 GB/s DRAM bandwidth. The measured 5.15x beats the supposed ceiling, and the
+GPU's 1037 GB/s kernel rate likewise exceeds its own 504 GB/s VRAM bandwidth,
+for exactly the same reason: the kernel re-reads each input from shared memory
+and L2 across the output group rather than from VRAM per access. That is the
+design working as intended.
+
+**"Treat any end-to-end result much above 2x as suspect" was wrong.** The
+measured 2.26x is legitimate. The correct check is not a threshold on the total
+but whether the scan is unchanged between backends — it is, to within noise, so
+the gain is coming from the phase the backend actually controls.
+
+What does still hold is the shape of the constraint: the scan is untouched, so
+end-to-end is bounded by it. Even an infinitely fast reconstruct leaves
+delete-mode repair at the 9.22 s scan, a hard ceiling of 3.13x, and corrupt mode
+at 1.90x. The backend has already captured most of the delete-mode headroom.
 
 ## Reproducing
 
 ```bash
 python3 tests/bench/parbench.py --par2 ./x64/Release/par2.exe \
-        --size 10G --repeat 3 --phase-split --backend cpu
+        --size 10G --repeat 3 --phase-split --backend cpu --backend gpu
 ```
 
 `--phase-split` is what produces the scan/reconstruct columns; without it the
