@@ -14,27 +14,24 @@ jobs:
     - name: prepare
       run: brew install automake
 
-    # Metal needs a shader compiler, which recent Xcode versions ship as a
-    # separately downloaded component rather than in the base install. Report
-    # what this runner has instead of assuming: the build below leaves Metal on
-    # "auto", so it succeeds either way, and this tells us whether the Metal
-    # path is actually being covered.
+    # Recent Xcode ships the Metal shader compiler as a separately downloaded
+    # component rather than in the base install, so its presence is not a given.
+    # It is present on the runners as of 2026-08 (metal 32023.883), which is why
+    # the build below can require it.
     - name: Report Metal toolchain availability
-      run: |
-        xcodebuild -version || true
-        if xcrun -sdk macosx metal --version 2>/dev/null; then
-          echo "metal-shader-compiler=present" >> "$GITHUB_STEP_SUMMARY"
-        else
-          echo "metal-shader-compiler=ABSENT (Metal backend will be skipped)" >> "$GITHUB_STEP_SUMMARY"
-        fi
+      run: xcrun -sdk macosx metal --version
 
+    # --enable-metal rather than the default "auto": if the runner image drops
+    # the shader compiler, CI must fail loudly rather than quietly building
+    # CPU-only and leaving the Metal path uncovered. If that happens, this is
+    # the flag to relax - the backend itself is fine without it.
     - name: Build and test
       run: |
         ./automake.sh
-        ./configure
+        ./configure --enable-metal
         make -j"$(sysctl -n hw.ncpu)"
         make check
-        make distcheck
+        make distcheck DISTCHECK_CONFIGURE_FLAGS=--enable-metal
 
     - name: Report detected backends
       run: ./par2 --list-gpus

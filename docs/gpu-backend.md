@@ -382,10 +382,10 @@ CPU-bound scan. Report both; either alone misleads.
   full suite green, multi-chunk `-m4` repair correct, and both
   create/repair backend combinations hash-identical.
 - ~~Verify the autotools build.~~ Done — §4. Both paths build, and Linux CI
-  now covers the enabled one on every push. Still unproven: the **Metal**
-  autotools path in CI, because GitHub's macOS runners may not ship the Metal
-  shader compiler (recent Xcode makes it a separate download). The macOS
-  workflow now reports whether it is present, so the next run will say.
+  now covers the enabled one on every push. The macOS runners do ship the Metal
+  shader compiler (`metal 32023.883` as of 2026-08), so that workflow requires
+  it with `--enable-metal` too — both GPU backends are now built by CI on every
+  push, on the platform that can build each.
 - **Staging is now the bottleneck worth attacking.** On the 4070 Ti a 10 GiB
   repair is 2.07 s of kernel against 0.92 s of PCIe staging, leaving the GPU
   busy ~63% of the GF16 phase — see `BASELINE.md`. Note this contradicts
