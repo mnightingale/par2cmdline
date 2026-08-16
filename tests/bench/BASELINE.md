@@ -241,6 +241,61 @@ sweep in `docs/gpu-backend.md` §8 rules out "too few batches in flight" as the
 cause, so that time is most likely spent waiting for par2 to hand over input
 slices rather than anything the backend controls.
 
+## Cross-check against OpenCL (ParPar 0.4.5)
+
+Upstream ParPar has its own GPU backend, reachable with `--opencl-process
+100%`. Running it on the same card and corpus is the cheapest available check
+that the Vulkan speedup is real rather than a measurement artefact, and it
+answers a specific review question: the kernel uses no permutation/shuffle
+operations, so is it leaving a lot on the table?
+
+ParPar is a creator, not a repairer, so the comparable operation is creation.
+Same corpus, 2000 input slices, 300 recovery slices, ~5.37 MB each — 3221 GB
+of multiply-add:
+
+| | metric | time | implied rate |
+| --- | --- | --- | --- |
+| par2 CPU (`--gpu=off`) | total wall | 31.07 s | 104 GB/s |
+| par2 Vulkan (`--gpu=auto`) | total wall | 18.43 s | — |
+| par2 Vulkan | GF16 phase wall | 18.18 s | 177 GB/s |
+| par2 Vulkan | GPU busy | 4.61 s (copy 0.41 + kernel 4.20) | 767 GB/s kernel |
+| ParPar CPU (Xor-JIT AVX2, 16 threads) | Processing time | 65.02 s | 50 GB/s |
+| ParPar OpenCL (Lookup) | Processing time | 10.46 s | 308 GB/s |
+
+**ParPar's OpenCL kernel is also a lookup-table method** — it reports
+`Multiply method : Lookup, split into 8 * 8192 B workgroups`. The reference
+GPU implementation made the same choice as `gf16_vulkan.comp`, so the absence
+of shuffle operations is not an oversight peculiar to this backend. It is
+consistent with the traffic estimate above: on a discrete GPU the multiply is
+not the constraint, so the trick that dominates CPU SIMD has much less to give.
+
+**The kernel is not what limits creation here.** It completes the whole
+workload in 4.20 s of GPU time, yet the GF16 phase takes 18.18 s — the GPU is
+busy **25%** of it, against 60% during repair. Creation folds reading and
+hashing all 10 GiB into the same phase, and ParPar finishes the entire create
+in 10.67 s wall, less than our GF16 phase alone. The gap is par2cmdline's
+create pipeline overlapping I/O and hashing with compute, not the backend.
+
+### Reading these numbers
+
+**Trust the within-tool ratios, not the cross-tool absolutes.** ParPar's CPU
+path measures 50 GB/s where par2's measures 104 GB/s on shared GF16 code, so
+"Processing time" and the wall clocks here plainly do not span the same work.
+Part of that is ParPar reporting `Input pass(es): 2` — which `-m 3G` did not
+change, and which costs about 5% (11.02 s against 10.46 s) — but not a factor
+of two. The discrepancy is unexplained.
+
+On within-tool ratios: ParPar 6.2x (65.02 → 10.46), par2 1.69x end to end for
+creation (31.07 → 18.43). The latter is diluted by the 75% idle, not by kernel
+speed; the repair-phase 5.15x is the figure that reflects the backend itself.
+
+Reproduce with the prebuilt Windows ParPar from its GitHub releases:
+
+```bash
+parpar -s 2000 -r 300 --opencl-process 100% -o out.par2 <corpus files>
+parpar --opencl-list          # confirms the device is actually found
+```
+
 ## Corrections to earlier estimates in this file
 
 Two claims recorded here before the backend existed did not survive contact
