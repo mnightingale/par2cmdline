@@ -241,6 +241,44 @@ sweep in `docs/gpu-backend.md` §8 rules out "too few batches in flight" as the
 cause, so that time is most likely spent waiting for par2 to hand over input
 slices rather than anything the backend controls.
 
+## Vulkan against OpenCL, in the same binary
+
+ParPar's OpenCL backend is now built into par2cmdline as well
+(`--gpu=<id>` selects it; `--list-gpus` reports the same card twice, once per
+API). Both backends therefore run in the same host pipeline, on the same
+corpus, against the same damage — which removes the confounds that make the
+ParPar-hosted comparison further down hard to read.
+
+10 GiB delete-mode repair, 2000 source, 200 reconstructed, two interleaved
+rounds, best of each:
+
+| backend | reconstruct | GF16 | vs CPU |
+| --- | --- | --- | --- |
+| CPU | 19.38 s | 110.8 GB/s | 1.00x |
+| **Vulkan** | **3.86 s** | **556.1 GB/s** | **5.02x** |
+| OpenCL | 6.14 s | 349.4 GB/s | 3.16x |
+
+Both rounds agree (Vulkan 4.46/3.86, OpenCL 6.30/6.14) and the scan is
+unchanged across all three, as it must be.
+
+**Vulkan is ~1.59x faster than OpenCL here**, and the comparison is like for
+like in the way that matters: OpenCL auto-selects its `Lookup` kernel — par2
+reports `Multiply method: NVIDIA GeForce RTX 4070 Ti (OpenCL Lookup)`, the same
+method ParPar picks — so this is two lookup-table GPU kernels, not two
+different algorithms.
+
+That is worth stating plainly because it inverts the expectation that prompted
+the comparison: the concern was that `gf16_vulkan.comp` uses no permutation
+operations and must therefore be leaving performance on the table. Against the
+mature OpenCL implementation on the same hardware, it is ahead.
+
+**Caveat: OpenCL here is not tuned.** It is constructed with `GF16OCL_AUTO` and
+only the input batch size passed through; `targetIters` and `targetGrouping`
+are left at their defaults, where ParPar's own CLI exposes them. Its reported
+`max allocation` is also lower than Vulkan's (3070 MB against 4095 MB), which
+may force different chunking. So read this as "OpenCL as auto-configured"
+rather than "the best OpenCL can do".
+
 ## Cross-check against OpenCL (ParPar 0.4.5)
 
 Upstream ParPar has its own GPU backend, reachable with `--opencl-process
