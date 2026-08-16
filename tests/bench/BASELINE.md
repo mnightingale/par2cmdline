@@ -193,6 +193,35 @@ exists.
 - **CPU: 113 GB/s** (2147 GB / 18.97 s median, delete mode)
 - **GPU: 583 GB/s** (2147 GB / 3.68 s median, delete mode)
 
+### `reconstruct` is not all GF16, in delete mode either
+
+`repair` re-verifies what it just wrote — `par2repairer.cpp:341`, *"Verifying
+repaired files"*, calling `VerifyTargetFiles()`. So `repair − verify` carries
+three things, not one: the GF16 multiply-add, writing the recovered files, and
+then **reading and hashing them back**.
+
+The backend's own instrumentation separates them. `feed` is the window during
+which par2 pushes slices, and is where all GF16 work happens; `tail` is
+everything after the last slice:
+
+| outputs | reconstruct-equivalent wall | feed | tail |
+| --- | --- | --- | --- |
+| 100 (0.5 GiB repaired) | 2.56 s | 1.63 s | 0.92 s |
+| 200 (1.0 GiB repaired) | 3.25 s | 2.07 s | 1.17 s |
+| 300 (1.5 GiB repaired) | 5.00 s | 2.85 s | 2.15 s |
+
+The tail scales with repaired bytes rather than with GF16 work, at roughly
+1.2-1.8 s/GiB — the same order as the scan's ~1.1 s/GiB for read-and-hash, as
+it should be, since it is largely the same operation.
+
+**That tail is backend-independent, so it dilutes every ratio in this file.**
+At 200 outputs it is ~1.2 s of both the CPU's 19.38 s and the GPU's 3.68 s.
+Netting it off gives roughly 18.2 s against 2.5 s — about **7x rather than the
+5.15x headline**. The headline figures are kept as measured because they are
+what `parbench.py --phase-split` reports and are reproducible; this note is the
+correction to apply when reasoning about the backends themselves rather than
+about what a user experiences.
+
 **Use the delete-mode figures.** In corrupt mode `repair` does substantial work
 that `verify` does not — rewriting repaired blocks back into the damaged files
 in place — so the difference is not purely GF16. That work does not accelerate,

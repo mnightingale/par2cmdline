@@ -421,30 +421,44 @@ CPU-bound scan. Report both; either alone misleads.
   shader compiler (`metal 32023.883` as of 2026-08), so that workflow requires
   it with `--enable-metal` too — both GPU backends are now built by CI on every
   push, on the platform that can build each.
-- **Overlapping the PCIe copies with the kernel.** The GPU is busy ~60% of the
-  GF16 phase, and within that busy time the copies and the dispatch run on one
-  engine and add rather than overlap.
+- **Overlapping the PCIe copies with the kernel.** Worth ~0.45 s, or 9-14% of
+  the GF16 phase, and it is the last GPU-side win available at this workload.
 
-  **Size the prize before building anything.** The stats line now splits GPU
-  time into `copy` and `kernel`, because an earlier reading of it conflated the
-  two and over-stated this item. On a 10 GiB repair, over three runs:
+  The stats line splits the phase into `setup`, `feed` (with the time par2
+  spends `blocked` on a free staging area), and `tail`. Feeding is the only
+  part where GPU speed matters; the tail is par2 writing the recovered files.
+  10 GiB repair, varying how many blocks are reconstructed:
 
-  | | |
-  | --- | --- |
-  | kernel | 1.61 s |
-  | PCIe copies | 0.44 s (21% of GPU-busy, 13% of the phase) |
-  | phase wall | 3.40 s |
+  | outputs | wall | gpu | copy | kernel | feed | blocked | tail |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | 100 | 2.56 s | 1.29 s | 0.49 | 0.80 | 1.63 s | 0.02 s | 0.92 s |
+  | 200 | 3.25 s | 2.06 s | 0.46 | 1.60 | 2.07 s | 0.56 s | 1.17 s |
+  | 300 | 5.00 s | 2.84 s | 0.45 | 2.39 | 2.85 s | 1.41 s | 2.15 s |
 
-  Perfect overlap therefore saves **~0.44 s of a 3.40 s phase**, which is ~13%
-  of the GF16 phase and roughly **3–4% of a delete-mode repair end to end**.
-  That is the ceiling, not the expectation. Weigh it against the fact that this
-  is synchronisation code where a mistake corrupts repairs silently.
+  At 200 and 300 outputs `gpu` tracks `feed` almost exactly, so **the GPU is
+  saturated while par2 feeds**, and `blocked` grows with it. The copies are 22%
+  of that GPU time and run on the same engine as the dispatch, so moving them
+  to a transfer queue shortens the feed window by about their duration.
 
-  Note also that the *larger* share is the ~34% of the phase in which the GPU
-  is idle. The staging-depth sweep below rules out too few batches in flight,
-  so that is most likely par2 feeding input slices, which no queue change
-  touches. Whoever picks this up should confirm that before assuming the queue
-  is the limit.
+  **It cannot do better than the I/O floor.** The 100-output row shows what
+  happens once the GPU is fast enough: `gpu` 1.29 s falls below `feed` 1.63 s,
+  `blocked` collapses to 0.02 s, and par2's own rate takes over. That 1.63 s
+  matches the measured floor for re-reading 10 GiB (1.5-1.6 s at 7 GB/s with
+  4+ threads; 2.6 s single-threaded). Taking copies off the compute engine at
+  200 outputs leaves 1.60 s of kernel against a ~1.6 s feed rate -- exactly the
+  floor. **After this change, further kernel improvements are invisible here.**
+
+  So: worth doing, once, with the expectation of ~0.45 s and nothing beyond.
+  Weigh that against it being synchronisation code where a mistake corrupts
+  repairs silently.
+
+  **An earlier revision of this item said the opposite, and the mistake is
+  instructive.** It compared GPU-busy against *total wall* -- 2.06 s of 3.25 s,
+  60% -- concluded the GPU was idle 40% of the time and therefore could not be
+  the constraint, and recommended against the work. But that idle is the tail,
+  where the GPU has nothing to do by construction because par2 is writing
+  files. Utilisation has to be measured against the phase where the resource is
+  actually being asked for, not against the whole operation.
 
   **The cheap diagnostic has been run; depth is not the answer.** Two
   explanations fitted that number — too few batches in flight, or the copies
@@ -489,7 +503,7 @@ CPU-bound scan. Report both; either alone misleads.
   slower than pass 1, so a cross-pass comparison of absolute times is
   meaningless.
 
-- **Give the copies their own queue.** This is the fix the sweep points to.
+- **Give the copies their own queue.** How to implement the item above.
   The device is currently created with a single compute queue
   (`controller_vulkan.cpp:309-335`, `queueCount = 1`), and `run_kernel` puts
   both `vkCmdCopyBuffer` calls and the `vkCmdDispatch` in **one command buffer
@@ -502,6 +516,17 @@ CPU-bound scan. Report both; either alone misleads.
   `CONCURRENT` between the two families — falling back to today's single-queue
   path where no such family exists, which is what MoltenVK and integrated GPUs
   report.
+
+  The 4070 Ti does expose one: `vulkaninfo` reports family 1 as
+  `TRANSFER_BIT | SPARSE_BINDING_BIT` with 2 queues, alongside a compute family
+  without graphics (family 2) which is what the backend already selects.
+
+  Verified with a throwaway build that skipped the copies entirely: GPU-busy
+  fell from 2.08 s to 1.60 s, exactly the copy time, confirming they occupy the
+  compute engine rather than overlapping already. (That build produces wrong
+  output — the kernel reads stale device memory — so only its timings mean
+  anything, and its *wall* is useless because par2 takes an expensive path when
+  the checksums fail.)
 
   **Do not disturb the barrier in `run_kernel`.** Its first scope covers
   everything previously submitted to the queue, and that is what serialises

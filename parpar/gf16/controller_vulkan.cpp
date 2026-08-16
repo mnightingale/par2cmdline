@@ -36,8 +36,13 @@ struct GpuStats {
 	std::atomic<uint64_t> gpuNs{0};
 	std::atomic<uint64_t> copyNs{0};
 	std::atomic<uint64_t> encodeNs{0};
+	// Time par2 spends blocked because no staging area is free, and the span
+	// over which it feeds slices.
+	std::atomic<uint64_t> waitAddNs{0};
+	std::atomic<uint64_t> firstAddNs{0}, lastAddNs{0};
 	std::atomic<uint64_t> dispatches{0};
 	double wallStart = 0;
+	std::atomic<uint64_t> startNs{0};
 };
 GpuStats g_stats;
 
@@ -424,7 +429,8 @@ static void gpu_stats_report(double wall, unsigned areas) {
 		// either wall time or PCIe time.
 		"[GPU STATS] wall %.2fs | gpu %.2fs (copy %.2fs + kernel %.2fs) over "
 		"%llu dispatches | host-stage %.2fs cpu (%.1f GiB) | lut+encode %.2fs | "
-		"readback %.2fs | staging areas %u\n",
+		"readback %.2fs | setup %.2fs | feed %.2fs (blocked %.2fs) | tail %.2fs | "
+		"staging areas %u\n",
 		wall,
 		g_stats.gpuNs.load() * s,
 		g_stats.copyNs.load() * s,
@@ -434,6 +440,10 @@ static void gpu_stats_report(double wall, unsigned areas) {
 		g_stats.stageBytes.load() / 1073741824.0,
 		g_stats.encodeNs.load() * s,
 		g_stats.readbackNs.load() * s,
+		(g_stats.firstAddNs.load() - g_stats.startNs.load()) * s,
+		(g_stats.lastAddNs.load() - g_stats.firstAddNs.load()) * s,
+		g_stats.waitAddNs.load() * s,
+		(now_ns() - g_stats.lastAddNs.load()) * s,
 		areas);
 }
 
@@ -537,7 +547,10 @@ bool PAR2ProcVulkan::init(unsigned inputGrouping, Galois16Methods cksumMethod) {
 	statBatchesStarted = 0;
 	chooseGeometry();
 	if(!buildPipeline()) return false;
-	if(gpu_stats_enabled() && g_stats.wallStart == 0) g_stats.wallStart = now_s();
+	if(gpu_stats_enabled() && g_stats.wallStart == 0) {
+		g_stats.wallStart = now_s();
+		g_stats.startNs = now_ns();
+	}
 	return true;
 }
 
@@ -1201,7 +1214,13 @@ PAR2ProcBackendAddResult PAR2ProcVulkan::canAdd() const {
 }
 
 void PAR2ProcVulkan::waitForAdd() {
+	const uint64_t t0 = gpu_stats_enabled() ? now_ns() : 0;
 	IPAR2ProcBackend::_waitForAdd(staging[currentStagingArea]);
+	if(gpu_stats_enabled()) {
+		g_stats.waitAddNs += now_ns() - t0;
+		if(!g_stats.firstAddNs) g_stats.firstAddNs = now_ns();
+		g_stats.lastAddNs = now_ns();
+	}
 }
 
 template<typename T>
