@@ -67,6 +67,7 @@ dnl Checks for library functions.
 AC_FUNC_MEMCMP
 AC_CHECK_FUNCS([stricmp] [strcasecmp])
 AC_CHECK_FUNCS([strchr] [memcpy])
+AC_CHECK_FUNCS([pread])
 
 AC_CHECK_FUNCS([getopt] [getopt_long])
 
