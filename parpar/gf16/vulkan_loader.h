@@ -86,6 +86,8 @@
 	X(vkDeviceWaitIdle) \
 	X(vkCreateFence) \
 	X(vkDestroyFence) \
+	X(vkCreateSemaphore) \
+	X(vkDestroySemaphore) \
 	X(vkResetFences) \
 	X(vkWaitForFences) \
 	X(vkGetFenceStatus) \

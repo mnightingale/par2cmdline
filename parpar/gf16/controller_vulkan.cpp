@@ -92,10 +92,15 @@ struct VulkanArea {
 	VkBufferAlloc hostLut, devLut;
 	VkDescriptorSet set;
 	VkCommandBuffer cmd;
+	// Staging copies, when a transfer-only queue exists. `ready` is signalled
+	// by the transfer submit and waited on by the compute submit.
+	VkCommandBuffer xfer;
+	VkSemaphore ready;
 	VkFence fence;
 	VkQueryPool queries;
-	VulkanArea() : set(VK_NULL_HANDLE), cmd(VK_NULL_HANDLE),
-	               fence(VK_NULL_HANDLE), queries(VK_NULL_HANDLE) {}
+	VulkanArea() : set(VK_NULL_HANDLE), cmd(VK_NULL_HANDLE), xfer(VK_NULL_HANDLE),
+	               ready(VK_NULL_HANDLE), fence(VK_NULL_HANDLE),
+	               queries(VK_NULL_HANDLE) {}
 };
 
 // Per transfer thread, so readbacks do not contend for one staging buffer or
@@ -121,6 +126,13 @@ struct PAR2ProcVulkanImpl {
 	VkDevice device;
 	VkQueue queue;
 	uint32_t queueFamily;
+	// Transfer-only family, when the device exposes one. UINT32_MAX otherwise,
+	// in which case the copies stay in the compute command buffer.
+	VkQueue transferQueue;
+	uint32_t transferFamily;
+	VkCommandPool transferPool;
+	std::mutex transferQueueMutex;
+	bool haveTransferQueue() const { return transferFamily != UINT32_MAX; }
 	bool haveTimestamps;
 	float timestampPeriod;
 
@@ -146,7 +158,9 @@ struct PAR2ProcVulkanImpl {
 
 	PAR2ProcVulkanImpl()
 	: instance(VK_NULL_HANDLE), physical(VK_NULL_HANDLE), device(VK_NULL_HANDLE),
-	  queue(VK_NULL_HANDLE), queueFamily(0), haveTimestamps(false),
+	  queue(VK_NULL_HANDLE), queueFamily(0),
+	  transferQueue(VK_NULL_HANDLE), transferFamily(UINT32_MAX),
+	  transferPool(VK_NULL_HANDLE), haveTimestamps(false),
 	  timestampPeriod(1.0f), shader(VK_NULL_HANDLE), setLayout(VK_NULL_HANDLE),
 	  pipeLayout(VK_NULL_HANDLE), pipeline(VK_NULL_HANDLE),
 	  descPool(VK_NULL_HANDLE), cmdPool(VK_NULL_HANDLE) {
@@ -162,16 +176,27 @@ struct PAR2ProcVulkanImpl {
 		return UINT32_MAX;
 	}
 
+	// `shared` marks a buffer the transfer queue writes and the compute queue
+	// reads. CONCURRENT lets both families touch it without ownership transfer
+	// barriers, which would otherwise have to be issued on both queues.
 	bool createBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
-	                  VkMemoryPropertyFlags want, VkBufferAlloc& out, bool map) {
+	                  VkMemoryPropertyFlags want, VkBufferAlloc& out, bool map,
+	                  bool shared = false) {
 		destroyBuffer(out);
 		if(size == 0) return true;
 
+		const uint32_t families[2] = { queueFamily, transferFamily };
 		VkBufferCreateInfo bi = {};
 		bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
 		bi.size = size;
 		bi.usage = usage;
-		bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		if(shared && haveTransferQueue()) {
+			bi.sharingMode = VK_SHARING_MODE_CONCURRENT;
+			bi.queueFamilyIndexCount = 2;
+			bi.pQueueFamilyIndices = families;
+		} else {
+			bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		}
 		if(dev.vkCreateBuffer(device, &bi, NULL, &out.buffer) != VK_SUCCESS)
 			return false;
 
@@ -331,21 +356,43 @@ PAR2ProcVulkan::PAR2ProcVulkan(int _deviceId, int stagingAreas)
 	impl->haveTimestamps = fams[chosen].timestampValidBits > 0
 		&& impl->props.limits.timestampPeriod > 0;
 
+	// A transfer-only family is a DMA engine that runs independently of the
+	// compute engine. Without one, copies submitted anywhere still execute on
+	// the compute engine and serialise against the kernel, so there is nothing
+	// to gain and the copies stay in the compute command buffer. MoltenVK and
+	// most integrated GPUs report no such family.
+	uint32_t xfer = UINT32_MAX;
+	for(uint32_t i = 0; i < famCount; i++) {
+		if(!fams[i].queueCount) continue;
+		if(!(fams[i].queueFlags & VK_QUEUE_TRANSFER_BIT)) continue;
+		if(fams[i].queueFlags & (VK_QUEUE_COMPUTE_BIT | VK_QUEUE_GRAPHICS_BIT)) continue;
+		xfer = i;
+		break;
+	}
+	if(getenv("PARPAR_VK_NO_TRANSFER_QUEUE")) xfer = UINT32_MAX;
+	impl->transferFamily = xfer;
+
 	const float priority = 1.0f;
-	VkDeviceQueueCreateInfo qi = {};
-	qi.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-	qi.queueFamilyIndex = chosen;
-	qi.queueCount = 1;
-	qi.pQueuePriorities = &priority;
+	VkDeviceQueueCreateInfo qi[2] = {};
+	qi[0].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+	qi[0].queueFamilyIndex = chosen;
+	qi[0].queueCount = 1;
+	qi[0].pQueuePriorities = &priority;
+	qi[1].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+	qi[1].queueFamilyIndex = xfer;
+	qi[1].queueCount = 1;
+	qi[1].pQueuePriorities = &priority;
 
 	VkDeviceCreateInfo di = {};
 	di.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-	di.queueCreateInfoCount = 1;
-	di.pQueueCreateInfos = &qi;
+	di.queueCreateInfoCount = impl->haveTransferQueue() ? 2 : 1;
+	di.pQueueCreateInfos = qi;
 	if(impl->inst.vkCreateDevice(impl->physical, &di, NULL, &impl->device) != VK_SUCCESS)
 		return;
 	if(!impl->dev.load(impl->inst, impl->device)) return;
 	impl->dev.vkGetDeviceQueue(impl->device, chosen, 0, &impl->queue);
+	if(impl->haveTransferQueue())
+		impl->dev.vkGetDeviceQueue(impl->device, xfer, 0, &impl->transferQueue);
 
 	VkShaderModuleCreateInfo si = {};
 	si.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
@@ -390,6 +437,13 @@ PAR2ProcVulkan::PAR2ProcVulkan(int _deviceId, int stagingAreas)
 	if(impl->dev.vkCreateCommandPool(impl->device, &cpi, NULL,
 	                                 &impl->cmdPool) != VK_SUCCESS) return;
 
+	if(impl->haveTransferQueue()) {
+		cpi.queueFamilyIndex = xfer;
+		if(impl->dev.vkCreateCommandPool(impl->device, &cpi, NULL,
+		                                 &impl->transferPool) != VK_SUCCESS)
+			return;
+	}
+
 	impl->areas.resize(staging.size());
 	initSuccess = true;
 }
@@ -406,6 +460,7 @@ PAR2ProcVulkan::~PAR2ProcVulkan() {
 		if(impl->shader) impl->dev.vkDestroyShaderModule(impl->device, impl->shader, NULL);
 		if(impl->descPool) impl->dev.vkDestroyDescriptorPool(impl->device, impl->descPool, NULL);
 		if(impl->cmdPool) impl->dev.vkDestroyCommandPool(impl->device, impl->cmdPool, NULL);
+		if(impl->transferPool) impl->dev.vkDestroyCommandPool(impl->device, impl->transferPool, NULL);
 		impl->inst.vkDestroyDevice(impl->device, NULL);
 		impl->device = VK_NULL_HANDLE;
 	}
@@ -432,9 +487,9 @@ static void gpu_stats_report(double wall, unsigned areas) {
 		"readback %.2fs | setup %.2fs | feed %.2fs (blocked %.2fs) | tail %.2fs | "
 		"staging areas %u\n",
 		wall,
-		g_stats.gpuNs.load() * s,
+		(g_stats.gpuNs.load() + g_stats.copyNs.load()) * s,
 		g_stats.copyNs.load() * s,
-		(g_stats.gpuNs.load() - g_stats.copyNs.load()) * s,
+		g_stats.gpuNs.load() * s,
 		(unsigned long long)g_stats.dispatches.load(),
 		g_stats.stageNs.load() * s,
 		g_stats.stageBytes.load() / 1073741824.0,
@@ -464,6 +519,11 @@ void PAR2ProcVulkan::_deinit() {
 		impl->destroyBuffer(a.devInput);
 		impl->destroyBuffer(a.hostLut);
 		impl->destroyBuffer(a.devLut);
+		if(a.ready) { impl->dev.vkDestroySemaphore(impl->device, a.ready, NULL); a.ready = VK_NULL_HANDLE; }
+		if(a.xfer) {
+			impl->dev.vkFreeCommandBuffers(impl->device, impl->transferPool, 1, &a.xfer);
+			a.xfer = VK_NULL_HANDLE;
+		}
 		if(a.fence) { impl->dev.vkDestroyFence(impl->device, a.fence, NULL); a.fence = VK_NULL_HANDLE; }
 		if(a.queries) { impl->dev.vkDestroyQueryPool(impl->device, a.queries, NULL); a.queries = VK_NULL_HANDLE; }
 		if(a.cmd) {
@@ -717,7 +777,7 @@ bool PAR2ProcVulkan::reallocBuffers() {
 			return false;
 		if(!impl->createBuffer(inBytes,
 				VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, a.devInput, false))
+				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, a.devInput, false, true))
 			return false;
 		if(!impl->createBuffer(lutBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -725,7 +785,7 @@ bool PAR2ProcVulkan::reallocBuffers() {
 			return false;
 		if(!impl->createBuffer(lutBytes,
 				VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, a.devLut, false))
+				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, a.devLut, false, true))
 			return false;
 
 		VkDescriptorSetAllocateInfo dsi = {};
@@ -760,6 +820,23 @@ bool PAR2ProcVulkan::reallocBuffers() {
 			if(impl->dev.vkAllocateCommandBuffers(impl->device, &cbi, &a.cmd) != VK_SUCCESS)
 				return false;
 		}
+		if(impl->haveTransferQueue()) {
+			if(a.xfer == VK_NULL_HANDLE) {
+				VkCommandBufferAllocateInfo xbi = {};
+				xbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+				xbi.commandPool = impl->transferPool;
+				xbi.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+				xbi.commandBufferCount = 1;
+				if(impl->dev.vkAllocateCommandBuffers(impl->device, &xbi, &a.xfer) != VK_SUCCESS)
+					return false;
+			}
+			if(a.ready == VK_NULL_HANDLE) {
+				VkSemaphoreCreateInfo si = {};
+				si.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+				if(impl->dev.vkCreateSemaphore(impl->device, &si, NULL, &a.ready) != VK_SUCCESS)
+					return false;
+			}
+		}
 		if(a.fence == VK_NULL_HANDLE) {
 			VkFenceCreateInfo fi = {};
 			fi.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
@@ -770,7 +847,9 @@ bool PAR2ProcVulkan::reallocBuffers() {
 			VkQueryPoolCreateInfo qpi = {};
 			qpi.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
 			qpi.queryType = VK_QUERY_TYPE_TIMESTAMP;
-			qpi.queryCount = 3;
+			// 0,1 bracket the copies; 2,3 the dispatch. They sit on different
+			// queues when a transfer queue is in use.
+			qpi.queryCount = 4;
 			if(impl->dev.vkCreateQueryPool(impl->device, &qpi, NULL, &a.queries) != VK_SUCCESS)
 				a.queries = VK_NULL_HANDLE; // stats are optional; carry on
 		}
@@ -996,17 +1075,17 @@ void PAR2ProcVulkan::completion_worker(ThreadMessageQueue<void*>& q) {
 		impl->dev.vkWaitForFences(impl->device, 1, &a.fence, VK_TRUE, UINT64_MAX);
 
 		if(gpu_stats_enabled() && a.queries != VK_NULL_HANDLE) {
-			// ts[0] before the copies, ts[1] after them, ts[2] after the
-			// dispatch. Real time on the GPU, as opposed to wall time, which
-			// includes queueing and any host-side stall.
-			uint64_t ts[3] = {0, 0, 0};
-			if(impl->dev.vkGetQueryPoolResults(impl->device, a.queries, 0, 3,
+			// ts[0..1] bracket the copies, ts[2..3] the dispatch. Engine
+			// occupancy, not wall time: when the two run on separate queues
+			// they overlap, so the sum exceeds the elapsed GPU time.
+			uint64_t ts[4] = {0, 0, 0, 0};
+			if(impl->dev.vkGetQueryPoolResults(impl->device, a.queries, 0, 4,
 					sizeof(ts), ts, sizeof(uint64_t),
-					VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) == VK_SUCCESS
-			   && ts[2] > ts[0]) {
-				g_stats.gpuNs += (uint64_t)((ts[2] - ts[0]) * impl->timestampPeriod);
+					VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) == VK_SUCCESS) {
 				if(ts[1] > ts[0])
 					g_stats.copyNs += (uint64_t)((ts[1] - ts[0]) * impl->timestampPeriod);
+				if(ts[3] > ts[2])
+					g_stats.gpuNs += (uint64_t)((ts[3] - ts[2]) * impl->timestampPeriod);
 			}
 			g_stats.dispatches++;
 		} else if(gpu_stats_enabled()) {
@@ -1118,48 +1197,73 @@ void PAR2ProcVulkan::run_kernel(unsigned area, unsigned numInputs) {
 	// The caller has already marked this area active and counted it in flight.
 	// Every early return below must undo that, or waitForAdd() blocks forever
 	// waiting for an area that will never be dispatched.
+	const bool split = impl->haveTransferQueue();
+	const bool timing = gpu_stats_enabled() && a.queries != VK_NULL_HANDLE;
+
 	VkCommandBufferBeginInfo bi = {};
 	bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 	bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-	if(impl->dev.vkBeginCommandBuffer(a.cmd, &bi) != VK_SUCCESS) {
+
+	VkBufferCopy inCopy = {};
+	inCopy.size = inBytes;
+	VkBufferCopy lutCopy = {};
+	lutCopy.size = lutBytes;
+
+	// Staging crosses PCIe into device-local memory; the kernel reads device
+	// memory, never the host buffer.
+	//
+	// With a transfer-only family the copies go to the DMA engine and the
+	// compute submit waits on a semaphore, so they overlap the previous batch's
+	// kernel. Without one they stay in the compute command buffer, where they
+	// would serialise against the kernel anyway.
+	VkCommandBuffer copyTarget = split ? a.xfer : a.cmd;
+	if(impl->dev.vkBeginCommandBuffer(copyTarget, &bi) != VK_SUCCESS) {
 		_batchCompleted(area);
 		return;
 	}
-
-	const bool timing = gpu_stats_enabled() && a.queries != VK_NULL_HANDLE;
 	if(timing) {
-		impl->dev.vkCmdResetQueryPool(a.cmd, a.queries, 0, 3);
-		impl->dev.vkCmdWriteTimestamp(a.cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+		impl->dev.vkCmdResetQueryPool(copyTarget, a.queries, 0, 4);
+		impl->dev.vkCmdWriteTimestamp(copyTarget, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
 		                              a.queries, 0);
 	}
-
-	// Stage this batch across PCIe into device-local memory. The kernel must
-	// read device memory; pointing it at the host buffer would trade the whole
-	// arithmetic-intensity advantage for PCIe latency per access.
-	VkBufferCopy inCopy = {};
-	inCopy.size = inBytes;
-	impl->dev.vkCmdCopyBuffer(a.cmd, a.hostInput.buffer, a.devInput.buffer, 1, &inCopy);
-	VkBufferCopy lutCopy = {};
-	lutCopy.size = lutBytes;
-	impl->dev.vkCmdCopyBuffer(a.cmd, a.hostLut.buffer, a.devLut.buffer, 1, &lutCopy);
-
-	// Splits the command buffer's GPU time into transfer and compute. Both run
-	// on the same engine today, so this is what a transfer queue could overlap.
+	impl->dev.vkCmdCopyBuffer(copyTarget, a.hostInput.buffer, a.devInput.buffer, 1, &inCopy);
+	impl->dev.vkCmdCopyBuffer(copyTarget, a.hostLut.buffer, a.devLut.buffer, 1, &lutCopy);
 	if(timing)
-		impl->dev.vkCmdWriteTimestamp(a.cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		impl->dev.vkCmdWriteTimestamp(copyTarget, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
 		                              a.queries, 1);
 
-	// Two dependencies in one barrier: the copies above must land before the
-	// kernel reads them, and the previous batch's accumulation into the output
-	// must land before this one reads-modifies-writes it. The first scope of a
-	// barrier covers everything previously submitted to this queue, which is
-	// what makes successive batches accumulate rather than race.
+	if(split) {
+		if(impl->dev.vkEndCommandBuffer(a.xfer) != VK_SUCCESS) {
+			_batchCompleted(area);
+			return;
+		}
+		if(impl->dev.vkBeginCommandBuffer(a.cmd, &bi) != VK_SUCCESS) {
+			_batchCompleted(area);
+			return;
+		}
+	}
+
+	if(timing)
+		impl->dev.vkCmdWriteTimestamp(a.cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+		                              a.queries, 2);
+
+	// Orders this dispatch after the previous batch's accumulation into the
+	// output: the first scope covers everything previously submitted to this
+	// queue, which is what makes batches accumulate rather than race.
+	//
+	// When split, the copies are not on this queue and the semaphore carries
+	// their dependency instead - a semaphore wait makes writes before the
+	// signal visible, so no TRANSFER_WRITE source is needed here.
 	VkMemoryBarrier mb = {};
 	mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-	mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+	mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
 	mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-	impl->dev.vkCmdPipelineBarrier(a.cmd,
-		VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+	VkPipelineStageFlags srcStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+	if(!split) {
+		mb.srcAccessMask |= VK_ACCESS_TRANSFER_WRITE_BIT;
+		srcStage |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+	}
+	impl->dev.vkCmdPipelineBarrier(a.cmd, srcStage,
 		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 		0, 1, &mb, 0, NULL, 0, NULL);
 
@@ -1177,17 +1281,41 @@ void PAR2ProcVulkan::run_kernel(unsigned area, unsigned numInputs) {
 
 	if(timing)
 		impl->dev.vkCmdWriteTimestamp(a.cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-		                              a.queries, 2);
+		                              a.queries, 3);
 
 	if(impl->dev.vkEndCommandBuffer(a.cmd) != VK_SUCCESS) {
 		_batchCompleted(area);
 		return;
 	}
 
+	// The transfer submit carries no fence: the compute submit waits on its
+	// semaphore, so the area's fence signalling implies the copies are done and
+	// both command buffers are free to re-record.
+	if(split) {
+		VkSubmitInfo xsi = {};
+		xsi.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+		xsi.commandBufferCount = 1;
+		xsi.pCommandBuffers = &a.xfer;
+		xsi.signalSemaphoreCount = 1;
+		xsi.pSignalSemaphores = &a.ready;
+		std::lock_guard<std::mutex> lock(impl->transferQueueMutex);
+		if(impl->dev.vkQueueSubmit(impl->transferQueue, 1, &xsi,
+		                           VK_NULL_HANDLE) != VK_SUCCESS) {
+			_batchCompleted(area);
+			return;
+		}
+	}
+
+	const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
 	VkSubmitInfo si = {};
 	si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 	si.commandBufferCount = 1;
 	si.pCommandBuffers = &a.cmd;
+	if(split) {
+		si.waitSemaphoreCount = 1;
+		si.pWaitSemaphores = &a.ready;
+		si.pWaitDstStageMask = &waitStage;
+	}
 	{
 		std::lock_guard<std::mutex> lock(impl->queueMutex);
 		if(impl->dev.vkQueueSubmit(impl->queue, 1, &si, a.fence) != VK_SUCCESS) {
