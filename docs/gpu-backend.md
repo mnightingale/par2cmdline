@@ -517,7 +517,15 @@ CPU-bound scan. Report both; either alone misleads.
 - ~~Windows CPU baseline.~~ Done — see §3 and `tests/bench/BASELINE.md`.
 - ~~A `--phase-split` mode for `parbench.py`.~~ Done — the scan-subtraction in
   §2 is now in the harness rather than done by hand.
-- **Decide what `PARPAR_GPU_STATS` and `PARPAR_GPU_STAGING` become.** Both are
+- **The OpenCL path segfaults when a kernel fails to launch.** Selecting any
+  `Log` method takes an access violation partway through `Repairing:`, where
+  ParPar reports `CL_INVALID_KERNEL_ARGS` and unwinds. The broken kernels are
+  upstream's problem, but crashing rather than failing over to the CPU is ours:
+  something in `controller_ocl.cpp`'s error path is not checked when driven
+  through the `std::future` interface. Reproduce with
+  `PARPAR_OCL_METHOD=8 par2 repair --gpu=<opencl id>`.
+- **Decide what `PARPAR_GPU_STATS`, `PARPAR_GPU_STAGING` and the `PARPAR_OCL_*`
+  overrides become.** Both are
   `getenv`, which MSVC warns on (C4996), and an environment variable is the
   wrong shape for anything meant to outlive an investigation. Once the staging
   sweep is re-run after the queue change (above), each should either be deleted

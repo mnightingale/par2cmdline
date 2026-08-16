@@ -86,6 +86,19 @@ int gpu_default_device() {
 // Device memory scales linearly with this: each area holds a full input batch
 // plus its lookup tables, so raising it on a card with limited VRAM can push
 // allocation past what the device will give back.
+#ifdef PARPAR_OPENCL_SUPPORT
+// Reads an integer override, clamped to [lo, hi]. Unset or unparseable leaves
+// the caller's default in place.
+static unsigned gpu_env_int(const char* name, unsigned def, unsigned lo, unsigned hi) {
+	const char* env = getenv(name);
+	if(!env || !*env) return def;
+	long v = atol(env);
+	if(v < (long)lo) v = (long)lo;
+	if(v > (long)hi) v = (long)hi;
+	return (unsigned)v;
+}
+#endif
+
 #if defined(PARPAR_METAL_SUPPORT) || defined(PARPAR_VULKAN_SUPPORT)
 static int gpu_staging_areas() {
 	const char* env = getenv("PARPAR_GPU_STAGING");
@@ -149,12 +162,23 @@ IPAR2ProcBackend* gpu_create_backend(int deviceId, size_t sliceSize,
 		for(int i = 0; i < deviceId; i++)
 			if(devices[i].api == GPU_API_OPENCL) apiIndex++;
 
-		// Default platform; see the note in gpu_device_opencl.cpp. The backend
-		// picks its own kernel and geometry, so inputGrouping is the only hint
-		// passed through - it maps to the input batch size, as elsewhere.
+		// Default platform; see the note in gpu_device_opencl.cpp.
+		//
+		// The kernel and geometry are auto-selected by default, matching what
+		// ParPar's own CLI does when given no tuning flags. The overrides exist
+		// so the backend can be compared against Vulkan at settings other than
+		// the defaults without a rebuild; they are investigation tools, on the
+		// same footing as PARPAR_GPU_STAGING. See docs/gpu-backend.md.
 		PAR2ProcOCL* be = new PAR2ProcOCL(-1, apiIndex);
 		be->setSliceSize(sliceSize);
-		if(!be->init(GF16OCL_AUTO, inputGrouping)) { delete be; return nullptr; }
+		if(!be->init(
+				(Galois16OCLMethods)gpu_env_int("PARPAR_OCL_METHOD", GF16OCL_AUTO, 0, GF16OCL_BY2),
+				gpu_env_int("PARPAR_OCL_BATCH", inputGrouping, 0, 65535),
+				gpu_env_int("PARPAR_OCL_ITERS", 0, 0, 65535),
+				gpu_env_int("PARPAR_OCL_GROUPING", 0, 0, 65535))) {
+			delete be;
+			return nullptr;
+		}
 		if(nameOut) *nameOut = info.name + " (OpenCL " + be->getMethodName() + ")";
 		return be;
 	}

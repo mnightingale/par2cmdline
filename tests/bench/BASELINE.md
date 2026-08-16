@@ -254,30 +254,66 @@ rounds, best of each:
 
 | backend | reconstruct | GF16 | vs CPU |
 | --- | --- | --- | --- |
-| CPU | 19.38 s | 110.8 GB/s | 1.00x |
-| **Vulkan** | **3.86 s** | **556.1 GB/s** | **5.02x** |
-| OpenCL | 6.14 s | 349.4 GB/s | 3.16x |
+| CPU | 19.29 s | 111.3 GB/s | 1.00x |
+| **Vulkan** | **3.59 s** | **597.6 GB/s** | **5.37x** |
+| OpenCL, auto | 6.13 s | 350.0 GB/s | 3.15x |
+| OpenCL, tuned | 5.73 s | 374.9 GB/s | 3.37x |
 
-Both rounds agree (Vulkan 4.46/3.86, OpenCL 6.30/6.14) and the scan is
-unchanged across all three, as it must be.
+**Vulkan is ~1.6x faster than OpenCL**, and that holds against a *tuned*
+OpenCL, not just its defaults. Both kernels are lookup-table based, so this is
+not two different algorithms being compared.
 
-**Vulkan is ~1.59x faster than OpenCL here**, and the comparison is like for
-like in the way that matters: OpenCL auto-selects its `Lookup` kernel — par2
-reports `Multiply method: NVIDIA GeForce RTX 4070 Ti (OpenCL Lookup)`, the same
-method ParPar picks — so this is two lookup-table GPU kernels, not two
-different algorithms.
+### Tuning OpenCL, and why it does not close the gap
 
-That is worth stating plainly because it inverts the expectation that prompted
-the comparison: the concern was that `gf16_vulkan.comp` uses no permutation
-operations and must therefore be leaving performance on the table. Against the
-mature OpenCL implementation on the same hardware, it is ahead.
+Both axes ParPar exposes were swept, using the `PARPAR_OCL_*` overrides:
 
-**Caveat: OpenCL here is not tuned.** It is constructed with `GF16OCL_AUTO` and
-only the input batch size passed through; `targetIters` and `targetGrouping`
-are left at their defaults, where ParPar's own CLI exposes them. Its reported
-`max allocation` is also lower than Vulkan's (3070 MB against 4095 MB), which
-may force different chunking. So read this as "OpenCL as auto-configured"
-rather than "the best OpenCL can do".
+**Method.** `GF16OCL_AUTO` already picks the best working kernel. Reconstruct
+time by method, 10 GiB repair:
+
+| method | reconstruct | |
+| --- | --- | --- |
+| Lookup | 7.11 s | what AUTO selects |
+| Lookup Group2 (NoCache) | 7.14 s | |
+| Lookup Group2 | 8.28 s | |
+| Lookup (NoCache) | 8.77 s | |
+| ByTwo | 12.46 s | |
+| **Shuffle** | **16.48 s** | |
+| Lookup Half | 17.66 s | |
+| Lookup Half (NoCache) | 18.33 s | |
+
+**Geometry.** `grouping=8` is worth about 10% over auto (6.11 s against
+6.73 s); `iters` makes no reliable difference. That is the whole of the tuning
+benefit, and it leaves the ratio where it was.
+
+### What this says about permutation operations
+
+The comparison was prompted by a review question: `gf16_vulkan.comp` uses no
+permutation (shuffle) operations, so is it leaving performance on the table?
+
+Measured on this hardware, no — and the evidence is directly against it.
+ParPar's own `Shuffle` kernel is **2.3x slower than its `Lookup` kernel**
+(16.48 s against 7.11 s), the second-worst of the eight working methods. So the
+technique is not merely absent from our shader; it is a poor fit for this GPU
+in a mature implementation of it.
+
+That is consistent with the traffic estimate above. Shuffles trade memory
+lookups for ALU work, and ALU is not the constraint here — the kernel is
+already spending most of its time moving data.
+
+### The Log kernels are broken, and nearly produced a fake result
+
+All six `Log` variants report 1-2 s reconstruct times, implying 1300-2000 GB/s
+— which would be a spectacular result if the repairs had completed. They do
+not: par2 takes an access violation partway through `Repairing:`, at every
+geometry tried.
+
+The cause is upstream rather than in this integration. ParPar itself fails on
+`--opencl-method log` with `OpenCL Execute Error: CL_INVALID_KERNEL_ARGS`.
+
+Two things follow. **Always record completion alongside timing** — a failed run
+is fast, and these numbers would have been the headline. And par2cmdline
+*crashes* where ParPar reports an error, so the OpenCL path here is ignoring a
+result code it should check; see `docs/gpu-backend.md` §8.
 
 ## Cross-check against OpenCL (ParPar 0.4.5)
 
