@@ -32,6 +32,11 @@
 
 #include "crc.h"
 
+// The implementations themselves, so this test can cover the ones dispatch
+// did not select.
+#include "crc_slice4.h"
+#include "crc_arm.h"
+
 
 // Example usage:
 //   u32 checksum = ~0 ^ CRCUpdateBlock(~0, (size_t)blocksize, buffer);
@@ -212,6 +217,66 @@ int test6() {
 
 
 
+// Byte-at-a-time reference for the block implementations to match.
+u32 CRCReference(u32 crc, size_t length, const void *buffer) {
+  const u8 *current = (const u8 *)buffer;
+  while (length-- > 0)
+    crc = CRCUpdateChar(crc, *current++);
+  return crc;
+}
+
+
+// Every implementation built for this CPU must agree with the reference,
+// including the ones dispatch did not select.
+int test7() {
+  struct implementation {
+    const char *name;
+    u32 (*fn)(u32, size_t, const void*);
+  };
+  implementation impls[2];
+  unsigned count = 0;
+
+  // The tables are per translation unit, so this one needs its own built.
+  BuildSliceTables();
+  impls[count].name = "slice4";
+  impls[count++].fn = &CRCUpdateBlock_Slice4;
+#ifdef PAR2_CRC_ARM
+  if (ArmHasCRC()) {
+    impls[count].name = "armcrc";
+    impls[count++].fn = &CRCUpdateBlock_ArmCRC;
+  }
+#endif
+
+  const size_t buffer_length = 8192;
+  u8 buffer[buffer_length];
+  for (size_t i = 0; i < buffer_length; i++)
+    buffer[i] = (u8)(i * 37 + (i >> 5));
+
+  // lengths either side of every stride an implementation may use, plus tails
+  const size_t lengths[] = {0, 1, 3, 7, 8, 9, 15, 16, 17, 31, 32, 33, 47, 48,
+                            63, 64, 65, 79, 80, 95, 96, 112, 127, 128, 129,
+                            143, 144, 191, 192, 255, 256, 257, 383, 384, 511,
+                            512, 1000, 4095, 4096, 8192};
+
+  for (unsigned li = 0; li < sizeof(lengths)/sizeof(lengths[0]); li++) {
+    const size_t length = lengths[li];
+    for (size_t offset = 0; offset < 8 && offset + length <= buffer_length; offset++) {
+      const u32 expected = CRCReference(~0, length, buffer + offset);
+      for (unsigned impl = 0; impl < count; impl++) {
+        const u32 crc = impls[impl].fn(~0, length, buffer + offset);
+        if (crc != expected) {
+          std::cerr << "CRC mismatch: " << impls[impl].name
+                    << " length " << length << " offset " << offset
+                    << " got " << crc << " expected " << expected << std::endl;
+          return 1;
+        }
+      }
+    }
+  }
+
+  return 0;
+}
+
 int main() {
   if (test1()) {
     std::cerr << "FAILED: test1" << std::endl;
@@ -235,6 +300,10 @@ int main() {
   }
   if (test6()) {
     std::cerr << "FAILED: test6" << std::endl;
+    return 1;
+  }
+  if (test7()) {
+    std::cerr << "FAILED: test7" << std::endl;
     return 1;
   }
 

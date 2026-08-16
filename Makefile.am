@@ -24,6 +24,7 @@ AUTOMAKE_OPTIONS = subdir-objects
 
 noinst_LIBRARIES = libpar2.a
 libpar2_a_SOURCES = src/crc.cpp src/crc.h \
+	src/crc_arm.h src/crc_slice4.h \
 	src/creatorpacket.cpp src/creatorpacket.h \
 	src/criticalpacket.cpp src/criticalpacket.h \
 	src/datablock.cpp src/datablock.h \
@@ -189,7 +190,8 @@ check_PROGRAMS = tests/letype_test tests/crc_test tests/md5_test tests/diskfile_
 
 tests_letype_test_SOURCES = src/letype_test.cpp src/letype.h
 
-tests_crc_test_SOURCES = src/crc_test.cpp src/crc.cpp src/crc.h
+tests_crc_test_SOURCES = src/crc_test.cpp src/crc.cpp src/crc.h \
+	src/crc_arm.h src/crc_slice4.h
 
 tests_md5_test_SOURCES = src/md5_test.cpp src/md5.cpp src/md5.h
 

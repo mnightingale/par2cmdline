@@ -54,17 +54,14 @@ inline u32 CRCUpdateChar(u32 crc, u8 ch)
   return ((crc >> 8) & 0x00ffffffL) ^ ccitttable.table[(u8)crc ^ ch];
 }
 
-// Update the CRC using a block of characters in a buffer
+// Update the CRC using a block of characters in a buffer.
+//
+// Dispatched at startup to the fastest implementation the CPU supports.
+extern u32 (*CRCUpdateBlockPtr)(u32 crc, size_t length, const void *buffer);
+
 inline u32 CRCUpdateBlock(u32 crc, size_t length, const void *buffer)
 {
-  const unsigned char *current = (const unsigned char *)buffer;
-
-  while (length-- > 0)
-  {
-    crc =  ((crc >> 8) & 0x00ffffffL) ^ ccitttable.table[(u8)crc ^ (*current++)];
-  }
-
-  return crc;
+  return CRCUpdateBlockPtr(crc, length, buffer);
 }
 
 // Update the CRC using a block of 0s.
@@ -81,23 +78,5 @@ inline u32 CRCSlideChar(u32 crc, u8 chNew, u8 chOld, const u32 (&windowtable)[25
   crc ^= ~0;
   return ((crc >> 8) & 0x00ffffffL) ^ ccitttable.table[(u8)crc ^ chNew] ^ windowtable[chOld];
 }
-
-/*
-
-  char *buffer;
-  u64 window;
-
-  //...
-
-  u32 windowtable[256];
-  GenerateWindowTable(window, windowtable);
-
-  u32 crc = ~0 ^ CRCUpdateBlock(~0, window, buffer);
-  crc = CRCSlideChar(crc, buffer[window], buffer[0], windowtable);
-
-  assert(crc == ~0 ^ CRCUpdateBlock(~0, window, buffer+1));
-
-*/
-
 
 #endif // __CRC_H__

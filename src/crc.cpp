@@ -35,6 +35,27 @@ static char THIS_FILE[]=__FILE__;
 // https://en.wikipedia.org/wiki/Cyclic_redundancy_check
 crc32table ccitttable(0xEDB88320L);
 
+#include "crc_slice4.h"
+#include "crc_arm.h"
+
+u32 (*CRCUpdateBlockPtr)(u32 crc, size_t length, const void *buffer) = &CRCUpdateBlock_Slice4;
+
+namespace {
+  struct CRCDispatchInit
+  {
+    CRCDispatchInit()
+    {
+      BuildSliceTables();
+#ifdef PAR2_CRC_ARM
+      if (ArmHasCRC())
+        CRCUpdateBlockPtr = &CRCUpdateBlock_ArmCRC;
+#endif
+    }
+  };
+  CRCDispatchInit crcdispatchinit;
+}
+
+
 
 // GF32 multiplication
 #define NEGATE32(n) (u32)(-((i32)(n)))
