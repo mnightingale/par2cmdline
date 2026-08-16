@@ -14,7 +14,8 @@
 enum GPUApi {
 	GPU_API_NONE = 0,
 	GPU_API_METAL,
-	GPU_API_VULKAN
+	GPU_API_VULKAN,
+	GPU_API_OPENCL
 };
 
 struct GPUDeviceInfo {
@@ -48,6 +49,7 @@ inline const char* gpu_api_name(GPUApi api) {
 	switch(api) {
 		case GPU_API_METAL:  return "Metal";
 		case GPU_API_VULKAN: return "Vulkan";
+		case GPU_API_OPENCL: return "OpenCL";
 		default:             return "none";
 	}
 }

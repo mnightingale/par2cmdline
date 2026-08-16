@@ -10,6 +10,10 @@
 # include "gpu_device_vulkan.h"
 # include "controller_vulkan.h"
 #endif
+#ifdef PARPAR_OPENCL_SUPPORT
+# include "gpu_device_opencl.h"
+# include "controller_ocl.h"
+#endif
 
 std::vector<GPUDeviceInfo> gpu_enumerate_devices() {
 	std::vector<GPUDeviceInfo> devices;
@@ -19,6 +23,11 @@ std::vector<GPUDeviceInfo> gpu_enumerate_devices() {
 #endif
 #ifdef PARPAR_VULKAN_SUPPORT
 	gpu_vulkan_enumerate(devices);
+#endif
+#ifdef PARPAR_OPENCL_SUPPORT
+	// Last, so it does not displace Vulkan as the default pick on a machine
+	// where both address the same physical device.
+	gpu_opencl_enumerate(devices);
 #endif
 
 	// Assign stable ids after all backends have reported, so --gpu=<id> refers
@@ -36,12 +45,30 @@ int gpu_default_device() {
 	// integrated and a discrete GPU this picks the discrete one, which is what
 	// we want: this workload is bandwidth-bound and the discrete part has far
 	// more of it.
-	int best = -1;
+	//
+	// API rank comes first, though. One physical device is usually reachable
+	// through more than one API, and the reported memory differs between them
+	// (OpenCL reports a little more of the same card than Vulkan does), so
+	// ranking on memory alone would let that reporting difference decide the
+	// backend. OpenCL exists here to be measured against the native backends,
+	// so it is only chosen when nothing else can drive the device.
+	auto rank = [](GPUApi api) -> int {
+		switch(api) {
+			case GPU_API_METAL:  return 0;
+			case GPU_API_VULKAN: return 0;
+			case GPU_API_OPENCL: return 1;
+			default:             return 2;
+		}
+	};
+
+	int best = -1, bestRank = 0;
 	uint64_t bestMemory = 0;
 	for(const auto& d : devices) {
 		if(!d.available || !d.supported) continue;
-		if(best < 0 || d.memory > bestMemory) {
+		const int r = rank(d.api);
+		if(best < 0 || r < bestRank || (r == bestRank && d.memory > bestMemory)) {
 			best = d.id;
+			bestRank = r;
 			bestMemory = d.memory;
 		}
 	}
@@ -113,6 +140,22 @@ IPAR2ProcBackend* gpu_create_backend(int deviceId, size_t sliceSize,
 		be->setNumThreads(numThreads);
 		if(!be->init(inputGrouping)) { delete be; return nullptr; }
 		if(nameOut) *nameOut = info.name + " (" + be->getMethodName() + ")";
+		return be;
+	}
+#endif
+#ifdef PARPAR_OPENCL_SUPPORT
+	case GPU_API_OPENCL: {
+		int apiIndex = 0;
+		for(int i = 0; i < deviceId; i++)
+			if(devices[i].api == GPU_API_OPENCL) apiIndex++;
+
+		// Default platform; see the note in gpu_device_opencl.cpp. The backend
+		// picks its own kernel and geometry, so inputGrouping is the only hint
+		// passed through - it maps to the input batch size, as elsewhere.
+		PAR2ProcOCL* be = new PAR2ProcOCL(-1, apiIndex);
+		be->setSliceSize(sliceSize);
+		if(!be->init(GF16OCL_AUTO, inputGrouping)) { delete be; return nullptr; }
+		if(nameOut) *nameOut = info.name + " (OpenCL " + be->getMethodName() + ")";
 		return be;
 	}
 #endif
