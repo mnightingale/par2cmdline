@@ -95,6 +95,9 @@
     <ClInclude Include="src\crc_arm.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\crc_clmul.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="src\crc_slice4.h">
       <Filter>Header Files</Filter>
     </ClInclude>

@@ -36,6 +36,7 @@
 // did not select.
 #include "crc_slice4.h"
 #include "crc_arm.h"
+#include "crc_clmul.h"
 
 
 // Example usage:
@@ -233,13 +234,25 @@ int test7() {
     const char *name;
     u32 (*fn)(u32, size_t, const void*);
   };
-  implementation impls[2];
+  implementation impls[3];
   unsigned count = 0;
 
   // The tables are per translation unit, so this one needs its own built.
   BuildSliceTables();
   impls[count].name = "slice4";
   impls[count++].fn = &CRCUpdateBlock_Slice4;
+#ifdef PAR2_CRC_X86
+  if (X86HasPclMul()) {
+    impls[count].name = "pclmul";
+    impls[count++].fn = &CRCUpdateBlock_PclMul;
+# ifdef PAR2_CRC_X86_VPCLMUL
+    if (X86HasVPclMul()) {
+      impls[count].name = "vpclmul";
+      impls[count++].fn = &CRCUpdateBlock_VPclMul;
+    }
+# endif
+  }
+#endif
 #ifdef PAR2_CRC_ARM
   if (ArmHasCRC()) {
     impls[count].name = "armcrc";

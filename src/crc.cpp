@@ -37,6 +37,7 @@ crc32table ccitttable(0xEDB88320L);
 
 #include "crc_slice4.h"
 #include "crc_arm.h"
+#include "crc_clmul.h"
 
 u32 (*CRCUpdateBlockPtr)(u32 crc, size_t length, const void *buffer) = &CRCUpdateBlock_Slice4;
 
@@ -46,6 +47,16 @@ namespace {
     CRCDispatchInit()
     {
       BuildSliceTables();
+#ifdef PAR2_CRC_X86
+      if (X86HasPclMul())
+      {
+        CRCUpdateBlockPtr = &CRCUpdateBlock_PclMul;
+# ifdef PAR2_CRC_X86_VPCLMUL
+        if (X86HasVPclMul())
+          CRCUpdateBlockPtr = &CRCUpdateBlock_VPclMul;
+# endif
+      }
+#endif
 #ifdef PAR2_CRC_ARM
       if (ArmHasCRC())
         CRCUpdateBlockPtr = &CRCUpdateBlock_ArmCRC;

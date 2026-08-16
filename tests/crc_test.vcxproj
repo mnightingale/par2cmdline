@@ -58,6 +58,7 @@
   <ItemGroup>
     <ClInclude Include="..\src\crc.h" />
     <ClInclude Include="..\src\crc_arm.h" />
+    <ClInclude Include="..\src\crc_clmul.h" />
     <ClInclude Include="..\src\crc_slice4.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
