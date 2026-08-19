@@ -39,13 +39,6 @@
 #include <vector>
 #include <memory>
 
-// Whether Read() may be called for the same DiskFile from more than one thread
-// at a time. It may where the position to read from is passed to the system
-// call, but not where the handle has to be positioned first.
-#if defined(_WIN32) || defined(HAVE_PREAD)
-#define DISKFILE_CONCURRENT_READ 1
-#endif
-
 // A disk file can be any type of file that par2cmdline needs
 // to read or write data from or to.
 

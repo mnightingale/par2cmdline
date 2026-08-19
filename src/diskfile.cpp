@@ -668,7 +668,6 @@ bool DiskFile::Read(u64 _offset, void *buffer, size_t length, LengthType maxleng
     return false;
   }
 
-#ifdef HAVE_PREAD
   int fd = fileno(file);
 
   while (length > 0) {
@@ -693,38 +692,6 @@ bool DiskFile::Read(u64 _offset, void *buffer, size_t length, LengthType maxleng
     length -= got;
     buffer = ((char *) buffer) + got;
   }
-#else
-  // Seeking the handle first, so not usable from several threads at once
-  // (see DISKFILE_CONCURRENT_READ)
-  if (fseek(file, (OffsetType)_offset, SEEK_SET))
-  {
-    #pragma omp critical(stdio)
-    *serr << "Could not read " << (u64)length << " bytes from " << filename << " at offset " << _offset << ": " << strerror(errno) << std::endl;
-    return false;
-  }
-
-  while (length > 0) {
-
-    LengthType want;
-    if (length > maxlength)
-      want = maxlength;
-    else
-      want = length;
-
-    LengthType got = fread(buffer, 1, want, file);
-    if (got != want)
-    {
-      // NOTE: This can happen on error or when hitting the end-of-file.
-
-      #pragma omp critical(stdio)
-      *serr << "Could not read " << (u64)length << " bytes from " << filename << " at offset " << _offset << ": " << strerror(errno) << std::endl;
-      return false;
-    }
-
-    length -= got;
-    buffer = ((char *) buffer) + got;
-  }
-#endif
 
   return true;
 }

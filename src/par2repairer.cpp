@@ -142,9 +142,7 @@ Result Par2Repairer::Process(
   // Asking for more file threads than the default is taken to mean that the
   // files are on a device which can be read from several threads at once, so
   // a file large enough to hold up the others is scanned block by block.
-#ifdef DISKFILE_CONCURRENT_READ
   blockparallel = filethreads > _FILE_THREADS;
-#endif
 #endif
 
   // Should we skip data whilst scanning files
