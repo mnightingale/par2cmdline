@@ -176,8 +176,6 @@ protected:
 #ifdef _OPENMP
   static u32 filethreads;      // Number of threads for file processing
 #endif
-  // Whether the file threads may be used to scan the blocks of a single file
-  static bool blockparallel;
   // How many files are being scanned block by block at this moment
   static std::atomic<u32> activeblockscans;
 

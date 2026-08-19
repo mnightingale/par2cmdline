@@ -39,7 +39,6 @@ static char THIS_FILE[]=__FILE__;
 #ifdef _OPENMP
 u32 Par2Repairer::filethreads = _FILE_THREADS;
 #endif
-bool Par2Repairer::blockparallel = false;
 std::atomic<u32> Par2Repairer::activeblockscans(0);
 
 
@@ -138,11 +137,6 @@ Result Par2Repairer::Process(
 {
 #ifdef _OPENMP
   filethreads = _filethreads;
-
-  // Asking for more file threads than the default is taken to mean that the
-  // files are on a device which can be read from several threads at once, so
-  // a file large enough to hold up the others is scanned block by block.
-  blockparallel = filethreads > _FILE_THREADS;
 #endif
 
   // Should we skip data whilst scanning files
@@ -160,11 +154,10 @@ Result Par2Repairer::Process(
   if (nthreads != 0)
     omp_set_num_threads(nthreads);
 
-  // Files are scanned in parallel, and when asked for, the blocks within one
-  // file are too, so both levels need to be able to run threads.
+  // Files are scanned in parallel, and so are the blocks within one file,
+  // so both levels need to be able to run threads.
 #if _OPENMP >= 200805
-  if (blockparallel)
-    omp_set_max_active_levels(2);
+  omp_set_max_active_levels(2);
 #endif
 #endif
 
@@ -1569,11 +1562,6 @@ bool Par2Repairer::ScanDataFileAligned(DiskFile               *diskfile,   // [i
                                        u32                    &matchcount) // [out]
 {
   matchcount = 0;
-
-  // Reading the blocks of a file out of order costs far more than it saves
-  // on a spinning disk, so this is only done when it has been asked for
-  if (!blockparallel)
-    return false;
 
   // We must know which source file the data is supposed to belong to
   if (0 == sourcefile)

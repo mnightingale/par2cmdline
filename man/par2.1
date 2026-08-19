@@ -63,13 +63,11 @@ Memory (in MB) to use (default is half of total physical memory)
 .TP
 .B \-T<n>
 .RB "Number of files hashed in parallel (default 2)."
-Set above the default, threads which are not busy with another file also share
-out the blocks of a single file, so that one large file is not left to a single
-thread while the others have finished. No more threads are used in total than
-this option asks for. Each block is then checked where it is expected to be,
-and only the parts of a file whose blocks are not there are searched a byte at
-a time afterwards. Those checks read the file out of order, which suits an SSD
-more than a spinning disk
+Threads which are not busy with another file also share out the blocks of a
+single file, so that one large file is not left to a single thread while the
+others have finished. No more threads are used in total than this option asks
+for. Each block is checked where it is expected to be, and only the parts of a
+file whose blocks are not there are searched a byte at a time afterwards
 .TP
 .B \-\-
 Treat all following arguments as filenames
