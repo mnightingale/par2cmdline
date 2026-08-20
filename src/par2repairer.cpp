@@ -191,6 +191,38 @@ Result Par2Repairer::Process(
   if (preparedresult != eSuccess)
     return preparedresult;
 
+  Result verifyresult = VerifyFiles(basepath, extrafiles, renameonly);
+
+  // Are any of the files incomplete
+  if (verifyresult == eRepairPossible)
+  {
+    // Do we want to carry out a repair
+    if (!dorepair)
+      return eRepairPossible;
+
+    Result repairresult = RepairFiles(memorylimit, basepath);
+    if (repairresult != eSuccess)
+      return repairresult;
+  }
+  else if (verifyresult != eSuccess)
+  {
+    return verifyresult;
+  }
+
+  if (purgefiles == true)
+  {
+    RemoveBackupFiles();
+    RemoveParFiles();
+  }
+
+  return eSuccess;
+}
+
+// Verify the source files and work out whether a repair is needed or possible
+Result Par2Repairer::VerifyFiles(const std::string &basepath,
+                                 std::vector<std::string> &extrafiles,
+                                 const bool renameonly)
+{
   // Create a verification hash table for all files for which we have not
   // found a complete version of the file and for which we have
   // a verification packet
@@ -224,126 +256,116 @@ Result Par2Repairer::Process(
   // Check the verification results and report the results
   if (!CheckVerificationResults())
     return eRepairNotPossible;
-
   // Are any of the files incomplete
   if (completefilecount < mainpacket->RecoverableFileCount())
-  {
-    // Do we want to carry out a repair
-    if (dorepair)
-    {
-      if (noiselevel > nlSilent)
-        sout << '\n';
-
-      // Rename any damaged or missnamed target files.
-      if (!RenameTargetFiles())
-        return eFileIOError;
-
-      // Are we still missing any files
-      if (completefilecount < mainpacket->RecoverableFileCount())
-      {
-        // Work out which files are being repaired, create them, and allocate
-        // target DataBlocks to them, and remember them for later verification.
-        if (!CreateTargetFiles())
-          return eFileIOError;
-
-        // Work out which data blocks are available, which need to be copied
-        // directly to the output, and which need to be recreated, and compute
-        // the appropriate Reed Solomon matrix.
-        if (!ComputeRSmatrix())
-        {
-          // Delete all of the partly reconstructed files
-          DeleteIncompleteTargetFiles();
-          return eFileIOError;
-        }
-
-        if (noiselevel > nlSilent)
-          sout << '\n';
-
-        // Allocate memory buffers for reading and writing data to disk.
-        if (!AllocateBuffers(memorylimit))
-        {
-          // Delete all of the partly reconstructed files
-          DeleteIncompleteTargetFiles();
-          return eMemoryError;
-        }
-
-        if (observer)
-          observer->OnRepairStart();
-
-        // Set the total amount of data to be processed.
-        ProgressMeter<u64> progress(sout, missingblockcount > 0 ? "Repairing: " : "Processing: ", blocksize * sourceblockcount * (missingblockcount > 0 ? missingblockcount : 1), noiselevel, observer);
-
-        // Start at an offset of 0 within a block.
-        u64 blockoffset = 0;
-        while (blockoffset < blocksize) // Continue until the end of the block.
-        {
-          // Work out how much data to process this time.
-          size_t blocklength = (size_t)std::min((u64)chunksize, blocksize-blockoffset);
-
-          // Read source data, process it through the RS matrix and write it to disk.
-          if (!ProcessData(blockoffset, blocklength, progress))
-          {
-            // Delete all of the partly reconstructed files
-            DeleteIncompleteTargetFiles();
-            return IsCancelled() ? eCancelled : eFileIOError;
-          }
-
-          if (IsCancelled())
-          {
-            // Delete all of the partly reconstructed files
-            DeleteIncompleteTargetFiles();
-            return eCancelled;
-          }
-
-          // Advance to the need offset within each block
-          blockoffset += blocklength;
-        }
-
-        if (noiselevel > nlSilent)
-          sout << "\nVerifying repaired files:\n" << std::endl;
-
-        // Verify that all of the reconstructed target files are now correct
-        if (!VerifyTargetFiles(basepath))
-        {
-          // Delete all of the partly reconstructed files
-          DeleteIncompleteTargetFiles();
-          return IsCancelled() ? eCancelled : eFileIOError;
-        }
-
-        if (IsCancelled())
-        {
-          // Delete all of the partly reconstructed files
-          DeleteIncompleteTargetFiles();
-          return eCancelled;
-        }
-      }
-
-      // Are all of the target files now complete?
-      if (completefilecount<mainpacket->RecoverableFileCount())
-      {
-        serr << "Repair Failed." << std::endl;
-        return eRepairFailed;
-      }
-      else
-      {
-        if (noiselevel > nlSilent)
-          sout << "\nRepair complete." << std::endl;
-      }
-    }
-    else
-    {
-      return eRepairPossible;
-    }
-  }
-
-  if (purgefiles == true)
-  {
-    RemoveBackupFiles();
-    RemoveParFiles();
-  }
+    return eRepairPossible;
 
   return eSuccess;
 }
+
+// Rebuild whatever is missing or damaged
+Result Par2Repairer::RepairFiles(const size_t memorylimit, const std::string &basepath)
+{
+  if (noiselevel > nlSilent)
+    sout << '\n';
+
+  // Rename any damaged or missnamed target files.
+  if (!RenameTargetFiles())
+    return eFileIOError;
+
+  // Are we still missing any files
+  if (completefilecount < mainpacket->RecoverableFileCount())
+  {
+    // Work out which files are being repaired, create them, and allocate
+    // target DataBlocks to them, and remember them for later verification.
+    if (!CreateTargetFiles())
+      return eFileIOError;
+
+    // Work out which data blocks are available, which need to be copied
+    // directly to the output, and which need to be recreated, and compute
+    // the appropriate Reed Solomon matrix.
+    if (!ComputeRSmatrix())
+    {
+      // Delete all of the partly reconstructed files
+      DeleteIncompleteTargetFiles();
+      return eFileIOError;
+    }
+
+    if (noiselevel > nlSilent)
+      sout << '\n';
+
+    // Allocate memory buffers for reading and writing data to disk.
+    if (!AllocateBuffers(memorylimit))
+    {
+      // Delete all of the partly reconstructed files
+      DeleteIncompleteTargetFiles();
+      return eMemoryError;
+    }
+
+    if (observer)
+      observer->OnRepairStart();
+
+    // Set the total amount of data to be processed.
+    ProgressMeter<u64> progress(sout, missingblockcount > 0 ? "Repairing: " : "Processing: ", blocksize * sourceblockcount * (missingblockcount > 0 ? missingblockcount : 1), noiselevel, observer);
+
+    // Start at an offset of 0 within a block.
+    u64 blockoffset = 0;
+    while (blockoffset < blocksize) // Continue until the end of the block.
+    {
+      // Work out how much data to process this time.
+      size_t blocklength = (size_t)std::min((u64)chunksize, blocksize-blockoffset);
+
+      // Read source data, process it through the RS matrix and write it to disk.
+      if (!ProcessData(blockoffset, blocklength, progress))
+      {
+        // Delete all of the partly reconstructed files
+        DeleteIncompleteTargetFiles();
+        return IsCancelled() ? eCancelled : eFileIOError;
+      }
+
+      if (IsCancelled())
+      {
+        // Delete all of the partly reconstructed files
+        DeleteIncompleteTargetFiles();
+        return eCancelled;
+      }
+
+      // Advance to the need offset within each block
+      blockoffset += blocklength;
+    }
+
+    if (noiselevel > nlSilent)
+      sout << "\nVerifying repaired files:\n" << std::endl;
+
+    // Verify that all of the reconstructed target files are now correct
+    if (!VerifyTargetFiles(basepath))
+    {
+      // Delete all of the partly reconstructed files
+      DeleteIncompleteTargetFiles();
+      return IsCancelled() ? eCancelled : eFileIOError;
+    }
+
+    if (IsCancelled())
+    {
+      // Delete all of the partly reconstructed files
+      DeleteIncompleteTargetFiles();
+      return eCancelled;
+    }
+  }
+
+  // Are all of the target files now complete?
+  if (completefilecount<mainpacket->RecoverableFileCount())
+  {
+    serr << "Repair Failed." << std::endl;
+    return eRepairFailed;
+  }
+
+  if (noiselevel > nlSilent)
+    sout << "\nRepair complete." << std::endl;
+
+  return eSuccess;
+}
+
 
 // List the files the loaded packets describe
 bool Par2Repairer::GetFileInfo(std::vector<Par2FileInfo> *files) const

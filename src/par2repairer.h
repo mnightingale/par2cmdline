@@ -86,6 +86,13 @@ protected:
   // Work out what the packets loaded so far describe
   Result PreparePackets(void);
 
+  // Verify the source files and work out whether a repair is needed
+  Result VerifyFiles(const std::string &basepath,
+                     std::vector<std::string> &extrafiles,
+                     const bool renameonly);
+  // Rebuild whatever is missing or damaged
+  Result RepairFiles(const size_t memorylimit, const std::string &basepath);
+
   // Load packets from the specified file
   bool LoadPacketsFromFile(std::string filename);
   // Finish loading a recovery packet
