@@ -149,12 +149,16 @@ Result Par2Repairer::Process(
 			     const bool purgefiles,
 			     const bool renameonly,
 			     const bool _skipdata,
-			     const u64 _skipleaway
+			     const u64 _skipleaway,
+			     const bool _forcefullhashverify
 			     )
 {
 #ifdef _OPENMP
   filethreads = _filethreads;
 #endif
+
+  // Should the whole of each file be hashed as well as its blocks
+  forcefullhashverify = _forcefullhashverify;
 
   // Should we skip data whilst scanning files
   skipdata = _skipdata;
@@ -1578,6 +1582,11 @@ bool Par2Repairer::ScanDataFileAligned(DiskFile               *diskfile,   // [i
 {
   matchcount = 0;
 
+  // The hash of the whole file can only be computed by reading it in order,
+  // so the file is left to the scan below when that hash is wanted
+  if (forcefullhashverify)
+    return false;
+
   // We must know which source file the data is supposed to belong to
   if (0 == sourcefile)
     return false;
@@ -1861,7 +1870,7 @@ bool Par2Repairer::ScanDataFile(DiskFile                *diskfile,    // [in]
   // The MD5 hash of the whole file is only needed to match against source
   // files which have no verification packet, and only when no block at all is
   // found. That can only happen when the whole of the file is being searched.
-  const bool computefilehashes = !unverifiablesourcefiles.empty()
+  const bool computefilehashes = (forcefullhashverify || !unverifiablesourcefiles.empty())
                                  && 1 == searchranges.size()
                                  && 0 == searchranges[0].first
                                  && filesize == searchranges[0].second;
@@ -2089,7 +2098,10 @@ bool Par2Repairer::ScanDataFile(DiskFile                *diskfile,    // [in]
     // hash of the block to be verified.
     if (matchtype            != eFullMatch ||
         count                != sourcefile->GetVerificationPacket()->BlockCount() ||
-        diskfile->FileSize() != sourcefile->GetDescriptionPacket()->FileSize())
+        diskfile->FileSize() != sourcefile->GetDescriptionPacket()->FileSize() ||
+        (forcefullhashverify &&
+         (hashfull != sourcefile->GetDescriptionPacket()->HashFull() ||
+          hash16k  != sourcefile->GetDescriptionPacket()->Hash16k())))
     {
       matchtype = ePartialMatch;
 

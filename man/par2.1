@@ -82,6 +82,13 @@ Rename-only mode (skip files that are not perfect matches, useful for quickly fi
 .B \-N
 data skipping (find badly mispositioned data blocks)
 .TP
+.B \-\-force\-full\-hash\-verify
+Also check the hash of the whole of each file, not only the hash of each of its
+blocks. If every block of a file matches and the file is the right length then
+the hash of the whole of it cannot differ, so this only guards against a
+deliberately constructed MD5 collision. It reads each file in one thread rather
+than sharing the file threads across its blocks.
+.TP
 .B \-S<n>
 Skip leaway (distance +/\- from expected block position, default 64)
 .SH OPTIONS create

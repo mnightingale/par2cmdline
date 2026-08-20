@@ -55,6 +55,7 @@ CommandLine::CommandLine(void)
 , operation(opNone)
 , purgefiles(false)
 , renameonly(false)
+, forcefullhashverify(false)
 , skipdata(false)
 , skipleaway(0)
 , blockcount(0)
@@ -130,6 +131,12 @@ void CommandLine::usage(void)
     "  -O       : Rename-only mode (skip files that are not perfect matches,\n"
     "             useful for quickly fixing renamed files)\n"
     "  -N       : Data skipping (find badly mispositioned data blocks)\n"
+    "  --force-full-hash-verify :\n"
+    "             Also check the hash of the whole of each file, not only the\n"
+    "             hash of each of its blocks. The blocks alone already settle\n"
+    "             whether a file is intact, so this only guards against a\n"
+    "             deliberately constructed MD5 collision, and it reads each\n"
+    "             file in one thread\n"
     "  -S<n>    : Skip leaway (distance +/- from expected block position, default 64)\n"
     "Options: (create)\n"
     "  -b<n>    : Set the Block-Count (default 2000)\n"
@@ -844,6 +851,16 @@ bool CommandLine::ReadArgs(int argc, const char * const *argv)
 
         case '-':
           {
+            if (argv[0] == std::string("--force-full-hash-verify")) {
+              if (operation == opCreate)
+              {
+                std::cerr << "Cannot specify a full hash verify unless repairing or verifying." << std::endl;
+                return false;
+              }
+              forcefullhashverify = true;
+              break;
+            }
+
 	    if (argv[0] != std::string("--")) {
               std::cerr << "Unknown option: " << argv[0] << std::endl;
 	      std::cerr << "  (Options must appear after create, repair or verify.)" << std::endl;

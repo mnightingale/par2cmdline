@@ -84,6 +84,8 @@ EXTRA_DIST = \
 	tests/bug190.tar.gz \
 	tests/block-count-wrap.tar.gz \
 	tests/generate-block-count-wrap-fixture.py \
+	tests/full-hash-mismatch.tar.gz \
+	tests/generate-full-hash-mismatch-fixture.py \
 	tests/flatdata-filelist.txt \
 	tests/subdirdata-filelist.txt \
 	tests/subdirdata-partial-filelist.txt \
@@ -181,6 +183,8 @@ EXTRA_DIST = \
 	tests/test44 \
 	tests/test45 \
 	tests/test45.ps1 \
+	tests/test46 \
+	tests/test46.ps1 \
 	tests/unit_tests \
 	tests/unit_tests.ps1
 
@@ -266,6 +270,7 @@ TESTS = \
 	tests/test43 \
 	tests/test44 \
 	tests/test45 \
+	tests/test46 \
 	tests/utf8_test \
 	tests/unit_tests
 

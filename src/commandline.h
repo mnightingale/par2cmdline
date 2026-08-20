@@ -97,6 +97,7 @@ public:
   bool                                GetRenameOnly(void) const  {return renameonly;}
   bool                                GetRecursive(void) const   {return recursive;}
   bool                                GetSkipData(void) const    {return skipdata;}
+  bool                                GetForceFullHashVerify(void) const {return forcefullhashverify;}
   u64                                 GetSkipLeaway(void) const  {return skipleaway;}
 #ifdef _OPENMP
   u32                                 GetNumThreads(void) {return nthreads;}
@@ -175,6 +176,8 @@ protected:
                                // recovery
   bool renameonly;             // Only attempt to repair via rename, skip
                                // files that are not perfect matches
+  bool forcefullhashverify;    // Whether to check the hash of the whole of each
+                               // file as well as the hash of each of its blocks
   bool skipdata;               // Whether we should assume that all good
                                // data blocks are within +/- bytes of
                                // where we expect to find them and should

@@ -41,7 +41,8 @@ public:
 		 const bool purgefiles,
 		 const bool renameonly,
 		 const bool skipdata,
-		 const u64 skipleaway
+		 const u64 skipleaway,
+		 const bool forcefullhashverify
 		 );
 
 protected:
@@ -181,6 +182,10 @@ protected:
 #endif
   // How many files are being scanned block by block at this moment
   static std::atomic<u32> activeblockscans;
+
+  // Should the hash of the whole of each file be checked as well as the hash
+  // of each of its blocks
+  bool                      forcefullhashverify;
 
   bool                      skipdata;                // Should we skip data whilst scanning
   u64                       skipleaway;              // The leaway +/- we should allow whilst scanning
