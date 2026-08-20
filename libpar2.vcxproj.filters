@@ -161,7 +161,7 @@
     <ClInclude Include="src\verificationpacket.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\libpar2.h">
+    <ClInclude Include="include\par2\libpar2.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\libpar2internal.h">

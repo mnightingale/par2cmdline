@@ -47,7 +47,7 @@ libpar2_a_SOURCES = src/crc.cpp src/crc.h \
 	src/reedsolomon.cpp src/reedsolomon.h \
 	src/verificationhashtable.cpp src/verificationhashtable.h \
 	src/verificationpacket.cpp src/verificationpacket.h \
-	src/libpar2.cpp src/libpar2.h src/libpar2internal.h \
+	src/libpar2.cpp src/libpar2internal.h \
 	src/utf8.cpp src/utf8.h
 
 
@@ -59,6 +59,7 @@ par2_SOURCES = src/par2cmdline.cpp \
 par2_LDADD = libpar2.a
 
 LDADD = -lstdc++
+AM_CPPFLAGS = -I$(top_srcdir)/include
 AM_CXXFLAGS = -Wall -std=c++14 $(OPENMP_CXXFLAGS)
 
 if MINGW
@@ -201,7 +202,7 @@ tests_md5_test_SOURCES = src/md5_test.cpp src/md5.cpp src/md5.h
 tests_diskfile_test_SOURCES = src/diskfile_test.cpp src/diskfile.cpp src/diskfile.h
 tests_diskfile_test_LDADD = libpar2.a
 
-tests_libpar2_test_SOURCES = src/libpar2_test.cpp src/libpar2.h
+tests_libpar2_test_SOURCES = src/libpar2_test.cpp include/par2/libpar2.h
 tests_libpar2_test_LDADD = libpar2.a
 
 tests_commandline_test_SOURCES = src/commandline_test.cpp src/commandline.cpp src/commandline.h

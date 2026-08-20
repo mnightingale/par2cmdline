@@ -202,7 +202,7 @@ typedef unsigned int     size_t;
 #define offsetof(TYPE, MEMBER) ((size_t) ((char*)(&((TYPE *)1)->MEMBER) - (char*)1))
 
 // par2cmdline includes
-#include "libpar2.h"
+#include <par2/libpar2.h>
 
 // Case-insensitive string comparison
 #ifdef _WIN32

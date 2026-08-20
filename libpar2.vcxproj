@@ -91,7 +91,7 @@
     <ClInclude Include="src\filechecksummer.h" />
     <ClInclude Include="src\galois.h" />
     <ClInclude Include="src\letype.h" />
-    <ClInclude Include="src\libpar2.h" />
+    <ClInclude Include="include\par2\libpar2.h" />
     <ClInclude Include="src\libpar2internal.h" />
     <ClInclude Include="src\mainpacket.h" />
     <ClInclude Include="src\md5.h" />
