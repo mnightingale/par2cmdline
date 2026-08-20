@@ -63,3 +63,4 @@ perf.*
 
 .vscode
 libpar2.pc
+/par2cmdline-*.tar.gz
