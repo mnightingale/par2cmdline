@@ -22,6 +22,8 @@
 
 #include <chrono>
 
+#include <par2/libpar2.h>
+
 namespace Par2
 {
 
@@ -36,6 +38,8 @@ class ProgressMeter
   const float scale;         // pre-computed multiplier to convert progress value into a percentage*10
   TValue current;            // last known progress value
   steady_clock::duration::rep printed; // last time progress was outputted
+  const bool print;          // whether the percentage is written to sout
+  Par2Observer *observer;    // notified of progress whatever the noise level
 
   inline u32 CalcThousandths(TValue val) const
   {
@@ -61,8 +65,14 @@ class ProgressMeter
     // if enough time has passed, print the current progress, and update the time record
     if (now - lastpoint >= PRINT_INTERVAL || newfraction == 1000)
     {
-      #pragma omp critical(stdio)
-      sout << message << newfraction/10 << '.' << newfraction%10 << "%\r" << std::flush;
+      if (print)
+      {
+        #pragma omp critical(stdio)
+        sout << message << newfraction/10 << '.' << newfraction%10 << "%\r" << std::flush;
+      }
+
+      if (observer)
+        observer->OnProgress(newfraction);
 #if defined(_OPENMP) && _OPENMP >= 201107
       #pragma omp atomic write
 #endif
@@ -73,10 +83,14 @@ class ProgressMeter
   }
 
 public:
-  ProgressMeter(std::ostream &sout, const std::string &message, TValue total) :
-    sout(sout), message(message), scale(1000.0f / total), current(0), printed(0) {}
-  ProgressMeter(std::ostream &sout, const char *message, TValue total) :
-    sout(sout), message(message), scale(1000.0f / total), current(0), printed(0) {}
+  ProgressMeter(std::ostream &sout, const std::string &message, TValue total,
+                NoiseLevel noiselevel, Par2Observer *observer = 0) :
+    sout(sout), message(message), scale(1000.0f / total), current(0), printed(0),
+    print(noiselevel > nlQuiet), observer(observer) {}
+  ProgressMeter(std::ostream &sout, const char *message, TValue total,
+                NoiseLevel noiselevel, Par2Observer *observer = 0) :
+    sout(sout), message(message), scale(1000.0f / total), current(0), printed(0),
+    print(noiselevel > nlQuiet), observer(observer) {}
 
   // NOTE: Update() doesn't always update current value, so don't mix it with Add()
   void Update(TValue newval)

@@ -90,11 +90,9 @@ public:
   // Get the first target DataBlock for the file
   std::vector<DataBlock>::iterator TargetBlocks(void) const {return targetblocks;}
 
-#if _OPENMP
-  // Set/Get "filesize on disk" needed for mt progress line
+  // Set/Get the filesize on disk
   void SetDiskFileSize();
   u64 DiskFileSize(void) const {return diskfilesize;}
-#endif
 
 protected:
   DescriptionPacket           *descriptionpacket;   // The file description packet
@@ -111,9 +109,7 @@ protected:
   DiskFile                    *completefile;        // A complete version of the file
 
   std::string                  targetfilename;      // The filename of the target file
-#if _OPENMP
   u64                          diskfilesize;        // The filesize of sourcefile on disk
-#endif
 };
 
 } // namespace Par2

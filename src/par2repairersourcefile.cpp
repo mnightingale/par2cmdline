@@ -49,9 +49,7 @@ Par2RepairerSourceFile::Par2RepairerSourceFile(DescriptionPacket *_descriptionpa
   targetfile = 0;
   completefile = 0;
 
-#ifdef _OPENMP
   diskfilesize = 0;
-#endif
 }
 
 Par2RepairerSourceFile::~Par2RepairerSourceFile(void)
@@ -170,11 +168,9 @@ bool Par2RepairerSourceFile::SetBlockCount(u64 blocksize)
   return true;
 }
 
-#ifdef _OPENMP
 void Par2RepairerSourceFile::SetDiskFileSize()
 {
   diskfilesize = DiskFile::GetFileSize(targetfilename);
 }
-#endif
 
 } // namespace Par2

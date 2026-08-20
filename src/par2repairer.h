@@ -45,6 +45,10 @@ public:
 		 const u64 skipleaway
 		 );
 
+  // Set an observer to be notified of progress and per-file results.
+  // Pass 0 to stop reporting. The observer must outlive this object.
+  void SetObserver(Par2Observer *_observer) {observer = _observer;}
+
 protected:
   // Steps in verifying and repairing files:
 
@@ -102,11 +106,7 @@ protected:
   bool VerifyExtraFiles(const std::vector<std::string> &extrafiles, const std::string &basepath, const bool renameonly);
 
   // Attempt to match the data in the DiskFile with the source file
-#ifdef _OPENMP
   bool VerifyDataFile(DiskFile *diskfile, Par2RepairerSourceFile *sourcefile, const std::string &basepath, ProgressMeter<u64> &progress, const bool renameonly = false);
-#else
-  bool VerifyDataFile(DiskFile *diskfile, Par2RepairerSourceFile *sourcefile, const std::string &basepath, const bool renameonly = false);
-#endif
 
   // Check the blocks of a source file at the offsets where they are expected
   // to be found. One thread reads the file in order while the others check the
@@ -126,9 +126,7 @@ protected:
   // found is for a different source file then "sourcefile" is changed accordingly.
   bool ScanDataFile(DiskFile                *diskfile,   // [in]     The file being scanned
                     std::string             basepath,    // [in]
-#ifdef _OPENMP
                     ProgressMeter<u64>      &progress,   // [in]
-#endif
                     const bool              renameonly,  // [in]     Only look for perfect matches
                     Par2RepairerSourceFile* &sourcefile, // [in/out] The source file matched
                     MatchType               &matchtype,  // [out]    The type of match
@@ -181,6 +179,8 @@ protected:
 
   const NoiseLevel noiselevel;              // OnScreen display
 
+  Par2Observer *observer;                   // Notified of progress, or 0
+
   std::string               searchpath;              // Where to find files on disk
 
   std::string               basepath;
@@ -194,6 +194,7 @@ protected:
 
   bool                      firstpacket;             // Whether or not a valid packet has been found.
   MD5Hash                   setid;                   // The SetId extracted from the first packet.
+  u64                       totaldatasize;           // Total size of the recoverable files
 
   std::map<u32, RecoveryPacket*> recoverypacketmap;       // One recovery packet for each exponent value.
   MainPacket               *mainpacket;              // One copy of the main packet.

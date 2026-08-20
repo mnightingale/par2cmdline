@@ -189,7 +189,7 @@ Result Par2Creator::Process(
       return eLogicError;
 
     // Set the total amount of data to be processed.
-    ProgressMeter<u64> progress(sout, "Processing: ", blocksize * sourceblockcount * recoveryblockcount);
+    ProgressMeter<u64> progress(sout, "Processing: ", blocksize * sourceblockcount * recoveryblockcount, noiselevel);
 
     // Start at an offset of 0 within a block.
     u64 blockoffset = 0;
@@ -356,7 +356,7 @@ bool Par2Creator::OpenSourceFiles(const std::vector<std::string> &extrafiles, st
   for (size_t i=0; i<extrafiles.size(); ++i)
     mttotalsize += DiskFile::GetFileSize(extrafiles[i]);
 
-  ProgressMeter<u64> progress(sout, "", mttotalsize);
+  ProgressMeter<u64> progress(sout, "", mttotalsize, noiselevel);
 #endif
 
 #ifdef _OPENMP

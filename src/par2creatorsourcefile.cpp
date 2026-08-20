@@ -142,7 +142,7 @@ bool Par2CreatorSourceFile::Open(NoiseLevel noiselevel, std::ostream &sout, std:
     MD5Context blockcontext;
     u32        blockcrc = 0;
 #ifndef _OPENMP
-    ProgressMeter<u64> progress(sout, "", filesize);
+    ProgressMeter<u64> progress(sout, "", filesize, noiselevel);
 #endif
 
     // Whilst we have not reached the end of the file
