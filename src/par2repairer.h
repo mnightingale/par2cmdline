@@ -165,7 +165,7 @@ protected:
   bool RemoveParFiles(void);
 
 #ifdef _OPENMP
-  static u32                          FileThreads(size_t filecount)
+  u32                                 FileThreads(size_t filecount) const
     {return (u32)std::max<size_t>(1, std::min<size_t>(filethreads, filecount));}
 #endif
 
@@ -180,7 +180,7 @@ protected:
   std::string               basepath;
 
 #ifdef _OPENMP
-  static u32 filethreads;      // Number of threads for file processing
+  u32 filethreads;             // Number of threads for file processing
 #endif
 
   bool                      skipdata;                // Should we skip data whilst scanning

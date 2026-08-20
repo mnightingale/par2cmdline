@@ -38,10 +38,6 @@ static char THIS_FILE[]=__FILE__;
 #endif
 
 
-#ifdef _OPENMP
-u32 Par2Repairer::filethreads = _FILE_THREADS;
-#endif
-
 
 // Test whether filename has a .par2 / .PAR2 / .Par2 extension.
 bool Par2Repairer::IsPar2Filename(const std::string &filename)
@@ -66,6 +62,9 @@ Par2Repairer::Par2Repairer(std::ostream &sout, std::ostream &serr, const NoiseLe
 , noiselevel(noiselevel)
 , searchpath()
 , basepath()
+#ifdef _OPENMP
+, filethreads(_FILE_THREADS)
+#endif
 , setid()
 , recoverypacketmap()
 , diskFileMap()
@@ -1236,7 +1235,10 @@ bool Par2Repairer::VerifySourceFiles(const std::string& basepath, std::vector<st
 #endif
 
   // Start verifying the files
-  #pragma omp parallel for schedule(dynamic) num_threads(Par2Repairer::FileThreads(sortedfiles.size()))
+#ifdef _OPENMP
+  const u32 filethreadcount = FileThreads(sortedfiles.size());
+#endif
+  #pragma omp parallel for schedule(dynamic) num_threads(filethreadcount)
   for (int i=0; i< static_cast<int>(sortedfiles.size()); ++i)
   {
     // Do we have a source file
@@ -1347,7 +1349,10 @@ bool Par2Repairer::VerifyExtraFiles(const std::vector<std::string> &extrafiles, 
     ProgressMeter<u64> progress(sout, "Scanning: ", mttotalextrasize);
 #endif
 
-    #pragma omp parallel for schedule(dynamic) num_threads(Par2Repairer::FileThreads(extrafiles.size()))
+#ifdef _OPENMP
+    const u32 filethreadcount = FileThreads(extrafiles.size());
+#endif
+    #pragma omp parallel for schedule(dynamic) num_threads(filethreadcount)
     for (int i=0; i< static_cast<int>(extrafiles.size()); ++i)
     {
       std::string filename = extrafiles[i];
@@ -2850,7 +2855,10 @@ bool Par2Repairer::VerifyTargetFiles(const std::string &basepath)
 #endif
 
   // Iterate through each file in the verification list
-  #pragma omp parallel for schedule(dynamic) num_threads(Par2Repairer::FileThreads(verifylist.size()))
+#ifdef _OPENMP
+  const u32 filethreadcount = FileThreads(verifylist.size());
+#endif
+  #pragma omp parallel for schedule(dynamic) num_threads(filethreadcount)
   for (int i=0; i< static_cast<int>(verifylist.size()); ++i)
   {
     Par2RepairerSourceFile *sourcefile = verifylist[i];

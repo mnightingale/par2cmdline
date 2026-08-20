@@ -32,16 +32,15 @@ static char THIS_FILE[]=__FILE__;
 #endif
 
 
-// static variable
-#ifdef _OPENMP
-u32 Par2Creator::filethreads = _FILE_THREADS;
-#endif
 
 
 Par2Creator::Par2Creator(std::ostream &sout, std::ostream &serr, const NoiseLevel noiselevel)
 : sout(sout)
 , serr(serr)
 , noiselevel(noiselevel)
+#ifdef _OPENMP
+, filethreads(_FILE_THREADS)
+#endif
 , blocksize(0)
 , chunksize(0)
 , inputbuffer(0)
@@ -360,7 +359,10 @@ bool Par2Creator::OpenSourceFiles(const std::vector<std::string> &extrafiles, st
   ProgressMeter<u64> progress(sout, "", mttotalsize);
 #endif
 
-  #pragma omp parallel for schedule(dynamic) num_threads(Par2Creator::GetFileThreads())
+#ifdef _OPENMP
+  const u32 filethreadcount = filethreads;
+#endif
+  #pragma omp parallel for schedule(dynamic) num_threads(filethreadcount)
   for (int i=0; i< static_cast<int>(extrafiles.size()); ++i)
   {
 #ifdef _OPENMP
