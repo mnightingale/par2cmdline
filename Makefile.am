@@ -67,6 +67,12 @@ par2_LDADD = libpar2.a
 
 LDADD = -lstdc++
 AM_CPPFLAGS = -I$(top_srcdir)/include
+
+AM_TESTS_ENVIRONMENT = \
+	CXX='$(CXX)'; \
+	CXXFLAGS='$(CXXFLAGS)'; \
+	OPENMP_CXXFLAGS='$(OPENMP_CXXFLAGS)'; \
+	export CXX CXXFLAGS OPENMP_CXXFLAGS;
 AM_CXXFLAGS = -Wall -std=c++14 $(OPENMP_CXXFLAGS)
 
 if MINGW
@@ -193,7 +199,9 @@ EXTRA_DIST = \
 	tests/test47 \
 	tests/test47.ps1 \
 	tests/unit_tests \
-	tests/unit_tests.ps1
+	tests/unit_tests.ps1 \
+	tests/consumer_build \
+	tests/consumer.cpp
 
 
 # Programs that need to be compiled for the test suite.
@@ -280,6 +288,7 @@ TESTS = \
 	tests/test46 \
 	tests/test47 \
 	tests/utf8_test \
+	tests/consumer_build \
 	tests/unit_tests
 
 install-exec-hook :
