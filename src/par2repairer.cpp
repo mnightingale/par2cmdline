@@ -547,6 +547,22 @@ bool Par2Repairer::LoadPacketsFromFile(std::string filename)
   return true;
 }
 
+// A file could claim critical packets of any size, so limit both a single held
+// body and the total held for one batch. Anything larger is read a second time
+// instead. The loaders reject a verification packet above 32768 entries, which
+// is the largest of the four.
+static const u64 maxcriticalpacket = sizeof(FILEVERIFICATIONPACKET)
+                                   + 32768 * sizeof(FILEVERIFICATIONENTRY);
+static const u64 maxcriticalbatch = 16 * 1048576;
+
+static bool IsCriticalPacket(const PACKETTYPE &type)
+{
+  return fileverificationpacket_type == type
+      || filedescriptionpacket_type == type
+      || mainpacket_type == type
+      || creatorpacket_type == type;
+}
+
 // Report up to remaining bytes of progress, decreasing remaining by the amount
 // reported
 void Par2Repairer::Report(ProgressMeter<u64> &progress, u64 &remaining, u64 amount)
@@ -567,7 +583,8 @@ bool Par2Repairer::VerifyPacketHash(DiskFile *diskfile, u64 offset,
                                     const PACKET_HEADER &header,
                                     u8 *buffer, size_t buffersize,
                                     ProgressMeter<u64> &progress,
-                                    u64 reportable)
+                                    u64 reportable,
+                                    u8 *body, size_t bodysize)
 {
   MD5Context context;
   context.Update(&header.setid, sizeof(header)-offsetof(PACKET_HEADER, setid));
@@ -575,17 +592,30 @@ bool Par2Repairer::VerifyPacketHash(DiskFile *diskfile, u64 offset,
   // The header was read by the scan that found this packet
   Report(progress, reportable, sizeof(PACKET_HEADER));
 
-  u64 current = offset + sizeof(PACKET_HEADER);
-  const u64 limit = offset + header.length;
-  while (current < limit)
+  // Keep the body for the packet to be built from when there is room for it,
+  // otherwise hash it a piece at a time
+  if (body != 0)
   {
-    size_t want = (size_t)std::min((u64)buffersize, limit-current);
-    if (!diskfile->Read(current, buffer, want))
+    if (!diskfile->Read(offset + sizeof(PACKET_HEADER), body, bodysize))
       return false;
-    context.Update(buffer, want);
-    current += want;
+    context.Update(body, bodysize);
 
-    Report(progress, reportable, want);
+    Report(progress, reportable, bodysize);
+  }
+  else
+  {
+    u64 current = offset + sizeof(PACKET_HEADER);
+    const u64 limit = offset + header.length;
+    while (current < limit)
+    {
+      size_t want = (size_t)std::min((u64)buffersize, limit-current);
+      if (!diskfile->Read(current, buffer, want))
+        return false;
+      context.Update(buffer, want);
+      current += want;
+
+      Report(progress, reportable, want);
+    }
   }
 
   MD5Hash hash;
@@ -619,6 +649,26 @@ bool Par2Repairer::VerifyAndDispatchPackets(DiskFile *diskfile,
     }
   }
 
+  // A critical packet is built from the same bytes that are read to hash it,
+  // which saves reading it a second time. Recovery packets are not held
+  // because their body is the recovery data itself.
+  std::vector<std::vector<u8> > body(count);
+  u64 bodytotal = 0;
+  for (size_t j = 0; j < todo.size(); j++)
+  {
+    const size_t i = todo[j];
+    if (!IsCriticalPacket(pktHeader[i].type))
+      continue;
+
+    const u64 bodysize = pktHeader[i].length - sizeof(PACKET_HEADER);
+    if (bodysize == 0 || bodysize > maxcriticalpacket
+        || bodytotal + bodysize > maxcriticalbatch)
+      continue;
+
+    body[i].resize((size_t)bodysize);
+    bodytotal += bodysize;
+  }
+
   std::vector<char> result(todo.size(), 0);
   if (!todo.empty())
   {
@@ -635,7 +685,9 @@ bool Par2Repairer::VerifyAndDispatchPackets(DiskFile *diskfile,
         const size_t i = todo[j];
         result[j] = VerifyPacketHash(diskfile, pktOffset[i], pktHeader[i],
                                      &buffer[0], buffersize,
-                                     progress, pktReportable[i]) ? 1 : 0;
+                                     progress, pktReportable[i],
+                                     body[i].empty() ? 0 : &body[i][0],
+                                     body[i].size()) ? 1 : 0;
       }
     }
   }
@@ -647,7 +699,9 @@ bool Par2Repairer::VerifyAndDispatchPackets(DiskFile *diskfile,
   {
     if (pktVerified[pktOffset[i]])
     {
-      DispatchPacket(diskfile, pktOffset[i], pktHeader[i], packets, recoverypackets);
+      DispatchPacket(diskfile, pktOffset[i], pktHeader[i],
+                     body[i].empty() ? 0 : &body[i][0],
+                     packets, recoverypackets);
     }
     else
     {
@@ -671,7 +725,7 @@ bool Par2Repairer::VerifyAndDispatchPackets(DiskFile *diskfile,
 }
 
 void Par2Repairer::DispatchPacket(DiskFile *diskfile, u64 offset,
-                                  PACKET_HEADER &header,
+                                  PACKET_HEADER &header, const u8 *body,
                                   u32 &packets, u32 &recoverypackets)
 {
   // If this is the first packet that we have found then record the setid
@@ -696,22 +750,22 @@ void Par2Repairer::DispatchPacket(DiskFile *diskfile, u64 offset,
   }
   else if (fileverificationpacket_type == header.type)
   {
-    if (LoadVerificationPacket(diskfile, offset, header))
+    if (LoadVerificationPacket(diskfile, offset, header, body))
       packets++;
   }
   else if (filedescriptionpacket_type == header.type)
   {
-    if (LoadDescriptionPacket(diskfile, offset, header))
+    if (LoadDescriptionPacket(diskfile, offset, header, body))
       packets++;
   }
   else if (mainpacket_type == header.type)
   {
-    if (LoadMainPacket(diskfile, offset, header))
+    if (LoadMainPacket(diskfile, offset, header, body))
       packets++;
   }
   else if (creatorpacket_type == header.type)
   {
-    if (LoadCreatorPacket(diskfile, offset, header))
+    if (LoadCreatorPacket(diskfile, offset, header, body))
       packets++;
   }
 }
@@ -746,12 +800,13 @@ bool Par2Repairer::LoadRecoveryPacket(DiskFile *diskfile, u64 offset, PACKET_HEA
 }
 
 // Finish loading a file description packet
-bool Par2Repairer::LoadDescriptionPacket(DiskFile *diskfile, u64 offset, PACKET_HEADER &header)
+bool Par2Repairer::LoadDescriptionPacket(DiskFile *diskfile, u64 offset, PACKET_HEADER &header,
+                                          const u8 *body)
 {
   DescriptionPacket *packet = new DescriptionPacket;
 
   // Load the packet from disk
-  if (!packet->Load(diskfile, offset, header))
+  if (!packet->Load(diskfile, offset, header, body))
   {
     delete packet;
     return false;
@@ -794,12 +849,13 @@ bool Par2Repairer::LoadDescriptionPacket(DiskFile *diskfile, u64 offset, PACKET_
 }
 
 // Finish loading a file verification packet
-bool Par2Repairer::LoadVerificationPacket(DiskFile *diskfile, u64 offset, PACKET_HEADER &header)
+bool Par2Repairer::LoadVerificationPacket(DiskFile *diskfile, u64 offset, PACKET_HEADER &header,
+                                           const u8 *body)
 {
   VerificationPacket *packet = new VerificationPacket;
 
   // Load the packet from disk
-  if (!packet->Load(diskfile, offset, header))
+  if (!packet->Load(diskfile, offset, header, body))
   {
     delete packet;
     return false;
@@ -843,7 +899,8 @@ bool Par2Repairer::LoadVerificationPacket(DiskFile *diskfile, u64 offset, PACKET
 }
 
 // Finish loading the main packet
-bool Par2Repairer::LoadMainPacket(DiskFile *diskfile, u64 offset, PACKET_HEADER &header)
+bool Par2Repairer::LoadMainPacket(DiskFile *diskfile, u64 offset, PACKET_HEADER &header,
+                                   const u8 *body)
 {
   // Do we already have a main packet
   if (0 != mainpacket)
@@ -852,7 +909,7 @@ bool Par2Repairer::LoadMainPacket(DiskFile *diskfile, u64 offset, PACKET_HEADER 
   MainPacket *packet = new MainPacket;
 
   // Load the packet from disk;
-  if (!packet->Load(diskfile, offset, header))
+  if (!packet->Load(diskfile, offset, header, body))
   {
     delete packet;
     return false;
@@ -864,7 +921,8 @@ bool Par2Repairer::LoadMainPacket(DiskFile *diskfile, u64 offset, PACKET_HEADER 
 }
 
 // Finish loading the creator packet
-bool Par2Repairer::LoadCreatorPacket(DiskFile *diskfile, u64 offset, PACKET_HEADER &header)
+bool Par2Repairer::LoadCreatorPacket(DiskFile *diskfile, u64 offset, PACKET_HEADER &header,
+                                      const u8 *body)
 {
   // Do we already have a creator packet
   if (0 != creatorpacket)
@@ -873,7 +931,7 @@ bool Par2Repairer::LoadCreatorPacket(DiskFile *diskfile, u64 offset, PACKET_HEAD
   CreatorPacket *packet = new CreatorPacket;
 
   // Load the packet from disk;
-  if (!packet->Load(diskfile, offset, header))
+  if (!packet->Load(diskfile, offset, header, body))
   {
     delete packet;
     return false;

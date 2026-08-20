@@ -46,7 +46,7 @@ public:
               u64 _blocksize);
 
   // Load a main packet from a specified file
-  bool Load(DiskFile *diskfile, u64 offset, PACKET_HEADER &header);
+  bool Load(DiskFile *diskfile, u64 offset, PACKET_HEADER &header, const u8 *body);
 
 public:
   // Get the set id.

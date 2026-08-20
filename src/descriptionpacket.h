@@ -48,7 +48,8 @@ public:
 
 public:
   // Load a description packet from a specified file
-  bool Load(DiskFile *diskfile, u64 offset, PACKET_HEADER &header);
+  bool Load(DiskFile *diskfile, u64 offset, PACKET_HEADER &header,
+            const u8 *body);
 
   // Return the name of the file
   std::string FileName(void) const;

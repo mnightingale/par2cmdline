@@ -51,6 +51,12 @@ public:
   static bool CompareLess(const CriticalPacket* const &left, const CriticalPacket* const &right);
 
 protected:
+  // Fill in the body of the packet, either from body when the bytes are already
+  // held in memory or by reading them from the file. body, when given, must
+  // hold length bytes.
+  bool    LoadBody(DiskFile *diskfile, u64 offset, const u8 *body,
+                   void *destination, size_t length);
+
   u8     *packetdata;
   size_t  packetlength;
 };
@@ -86,6 +92,19 @@ inline void* CriticalPacket::AllocatePacket(size_t length, size_t extra)
   memset(packetdata, 0, length+extra);
 
   return packetdata;
+}
+
+inline bool CriticalPacket::LoadBody(DiskFile *diskfile, u64 offset,
+                                     const u8 *body,
+                                     void *destination, size_t length)
+{
+  if (body != 0)
+  {
+    memcpy(destination, body, length);
+    return true;
+  }
+
+  return diskfile->Read(offset + sizeof(PACKET_HEADER), destination, length);
 }
 
 // Class used to record the fact that a copy of a particular critical packet

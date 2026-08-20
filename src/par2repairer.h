@@ -53,7 +53,8 @@ protected:
   bool VerifyPacketHash(DiskFile *diskfile, u64 offset,
                         const PACKET_HEADER &header,
                         u8 *buffer, size_t buffersize,
-                        ProgressMeter<u64> &progress, u64 reportable);
+                        ProgressMeter<u64> &progress, u64 reportable,
+                        u8 *body, size_t bodysize);
   bool VerifyAndDispatchPackets(DiskFile *diskfile,
                                 std::vector<u64> &pktOffset,
                                 std::vector<PACKET_HEADER> &pktHeader,
@@ -63,17 +64,22 @@ protected:
                                 ProgressMeter<u64> &progress,
                                 u64 &resumeOffset);
   void DispatchPacket(DiskFile *diskfile, u64 offset, PACKET_HEADER &header,
+                      const u8 *body,
                       u32 &packets, u32 &recoverypackets);
   // Finish loading a recovery packet
   bool LoadRecoveryPacket(DiskFile *diskfile, u64 offset, PACKET_HEADER &header);
   // Finish loading a file description packet
-  bool LoadDescriptionPacket(DiskFile *diskfile, u64 offset, PACKET_HEADER &header);
+  bool LoadDescriptionPacket(DiskFile *diskfile, u64 offset, PACKET_HEADER &header,
+                             const u8 *body);
   // Finish loading a file verification packet
-  bool LoadVerificationPacket(DiskFile *diskfile, u64 offset, PACKET_HEADER &header);
+  bool LoadVerificationPacket(DiskFile *diskfile, u64 offset, PACKET_HEADER &header,
+                              const u8 *body);
   // Finish loading the main packet
-  bool LoadMainPacket(DiskFile *diskfile, u64 offset, PACKET_HEADER &header);
+  bool LoadMainPacket(DiskFile *diskfile, u64 offset, PACKET_HEADER &header,
+                      const u8 *body);
   // Finish loading the creator packet
-  bool LoadCreatorPacket(DiskFile *diskfile, u64 offset, PACKET_HEADER &header);
+  bool LoadCreatorPacket(DiskFile *diskfile, u64 offset, PACKET_HEADER &header,
+                         const u8 *body);
 
   // Load packets from other PAR2 files with names based on the original PAR2 file
   bool LoadPacketsFromOtherFiles(std::string filename);

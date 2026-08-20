@@ -79,7 +79,7 @@ void DescriptionPacket::ComputeFileId(void)
 }
 
 // Load a description packet from a specified file
-bool DescriptionPacket::Load(DiskFile *diskfile, u64 offset, PACKET_HEADER &header)
+bool DescriptionPacket::Load(DiskFile *diskfile, u64 offset, PACKET_HEADER &header, const u8 *body)
 {
   // Is the packet big enough
   if (header.length <= sizeof(FILEDESCRIPTIONPACKET))
@@ -98,10 +98,10 @@ bool DescriptionPacket::Load(DiskFile *diskfile, u64 offset, PACKET_HEADER &head
 
   packet->header = header;
 
-  // Read the rest of the packet from disk
-  if (!diskfile->Read(offset + sizeof(PACKET_HEADER),
-                      &packet->fileid,
-                      (size_t)packet->header.length - sizeof(PACKET_HEADER)))
+  // Fill in the rest of the packet
+  if (!LoadBody(diskfile, offset, body,
+                &packet->fileid,
+                (size_t)packet->header.length - sizeof(PACKET_HEADER)))
     return false;
 
   // Are the file and 16k hashes consistent

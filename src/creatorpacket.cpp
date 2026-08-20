@@ -60,7 +60,7 @@ bool CreatorPacket::Create(const MD5Hash &setid)
 
 // Load the packet from disk.
 
-bool CreatorPacket::Load(DiskFile *diskfile, u64 offset, PACKET_HEADER &header)
+bool CreatorPacket::Load(DiskFile *diskfile, u64 offset, PACKET_HEADER &header, const u8 *body)
 {
   // Is the packet long enough
   if (header.length <= sizeof(CREATORPACKET))
@@ -78,8 +78,8 @@ bool CreatorPacket::Load(DiskFile *diskfile, u64 offset, PACKET_HEADER &header)
   CREATORPACKET *packet = (CREATORPACKET *)AllocatePacket((size_t)header.length, 4);
   packet->header = header;
 
-  // Load the rest of the packet from disk
-  return diskfile->Read(offset + sizeof(PACKET_HEADER),
-                        packet->client,
-                        (size_t)packet->header.length - sizeof(PACKET_HEADER));
+  // Fill in the rest of the packet
+  return LoadBody(diskfile, offset, body,
+                  packet->client,
+                  (size_t)packet->header.length - sizeof(PACKET_HEADER));
 }

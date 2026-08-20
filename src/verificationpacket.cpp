@@ -69,7 +69,7 @@ void VerificationPacket::SetBlockHashAndCRC(u32 blocknumber, const MD5Hash &hash
   entry.crc = crc;
 }
 
-bool VerificationPacket::Load(DiskFile *diskfile, u64 offset, PACKET_HEADER &header)
+bool VerificationPacket::Load(DiskFile *diskfile, u64 offset, PACKET_HEADER &header, const u8 *body)
 {
   // Is the packet large enough
   if (header.length <= sizeof(FILEVERIFICATIONPACKET))
@@ -96,8 +96,8 @@ bool VerificationPacket::Load(DiskFile *diskfile, u64 offset, PACKET_HEADER &hea
   // How many blocks are there
   blockcount = (u32)((((FILEVERIFICATIONPACKET*)packetdata)->header.length - sizeof(FILEVERIFICATIONPACKET)) / sizeof(FILEVERIFICATIONENTRY));
 
-  // Read the rest of the packet
-  return diskfile->Read(offset + sizeof(PACKET_HEADER),
-                        &packet->fileid,
-                        (size_t)packet->header.length - sizeof(PACKET_HEADER));
+  // Fill in the rest of the packet
+  return LoadBody(diskfile, offset, body,
+                  &packet->fileid,
+                  (size_t)packet->header.length - sizeof(PACKET_HEADER));
 }

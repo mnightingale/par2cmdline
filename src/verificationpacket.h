@@ -44,7 +44,7 @@ public:
   void SetBlockHashAndCRC(u32 blocknumber, const MD5Hash &hash, u32 crc);
 
   // Load a verification packet from a specified file
-  bool Load(DiskFile *diskfile, u64 offset, PACKET_HEADER &header);
+  bool Load(DiskFile *diskfile, u64 offset, PACKET_HEADER &header, const u8 *body);
 
   // Get the FileId
   const MD5Hash& FileId(void) const;

@@ -79,7 +79,7 @@ bool MainPacket::Create(std::vector<Par2CreatorSourceFile*> &sourcefiles, u64 _b
 
 // Load a main packet from a specified file
 
-bool MainPacket::Load(DiskFile *diskfile, u64 offset, PACKET_HEADER &header)
+bool MainPacket::Load(DiskFile *diskfile, u64 offset, PACKET_HEADER &header, const u8 *body)
 {
   // Is the packet large enough
   if (header.length < sizeof(MAINPACKET))
@@ -106,10 +106,10 @@ bool MainPacket::Load(DiskFile *diskfile, u64 offset, PACKET_HEADER &header)
 
   packet->header = header;
 
-  // Read the rest of the packet from disk
-  if (!diskfile->Read(offset + sizeof(PACKET_HEADER),
-                      &packet->blocksize,
-                     (size_t)packet->header.length - sizeof(PACKET_HEADER)))
+  // Fill in the rest of the packet
+  if (!LoadBody(diskfile, offset, body,
+                &packet->blocksize,
+                (size_t)packet->header.length - sizeof(PACKET_HEADER)))
     return false;
 
   // Does the packet have enough fileid values

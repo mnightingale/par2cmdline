@@ -38,7 +38,7 @@ public:
   bool Create(const MD5Hash &set_id_hash);
 
   // Load a creator packet from a specified file
-  bool Load(DiskFile *diskfile, u64 offset, PACKET_HEADER &header);
+  bool Load(DiskFile *diskfile, u64 offset, PACKET_HEADER &header, const u8 *body);
 };
 
 #endif // __CREATORPACKET_H__
