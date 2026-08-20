@@ -95,5 +95,5 @@ case "$host_os" in
 esac
 AM_CONDITIONAL([MINGW], [test "x$MINGW_BUILD" = "xyes"])
 
-AC_CONFIG_FILES([Makefile])
+AC_CONFIG_FILES([Makefile libpar2.pc])
 AC_OUTPUT

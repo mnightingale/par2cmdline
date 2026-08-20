@@ -22,7 +22,14 @@ AUTOMAKE_OPTIONS = subdir-objects
 
 .DELETE_ON_ERROR:
 
-noinst_LIBRARIES = libpar2.a
+lib_LIBRARIES = libpar2.a
+
+par2includedir = $(includedir)/par2
+par2include_HEADERS = include/par2/libpar2.h
+
+pkgconfigdir = $(libdir)/pkgconfig
+pkgconfig_DATA = libpar2.pc
+
 libpar2_a_SOURCES = src/crc.cpp src/crc.h \
 	src/creatorpacket.cpp src/creatorpacket.h \
 	src/criticalpacket.cpp src/criticalpacket.h \
