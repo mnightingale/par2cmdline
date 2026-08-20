@@ -57,6 +57,7 @@ Par2Repairer::Par2Repairer(std::ostream &sout, std::ostream &serr, const NoiseLe
 , serr(serr)
 , noiselevel(noiselevel)
 , observer(0)
+, cancelled(false)
 , searchpath()
 , basepath()
 #ifdef _OPENMP
@@ -178,10 +179,13 @@ Result Par2Repairer::Process(
 #endif
 
   if (!LoadPackets(parfilename, extrafiles))
-    return eLogicError;
+    return IsCancelled() ? eCancelled : eLogicError;
 
   if (noiselevel > nlQuiet)
     sout << '\n';
+
+  if (IsCancelled())
+    return eCancelled;
 
   Result preparedresult = PreparePackets();
   if (preparedresult != eSuccess)
@@ -199,13 +203,16 @@ Result Par2Repairer::Process(
 
   // Attempt to verify all of the source files
   if (!VerifySourceFiles(basepath, extrafiles))
-    return eFileIOError;
+    return IsCancelled() ? eCancelled : eFileIOError;
+
+  if (IsCancelled())
+    return eCancelled;
 
   if (completefilecount < mainpacket->RecoverableFileCount())
   {
     // Scan any extra files specified on the command line
     if (!VerifyExtraFiles(extrafiles, basepath, renameonly))
-      return eLogicError;
+      return IsCancelled() ? eCancelled : eLogicError;
   }
 
   // Find out how much data we have found
@@ -278,7 +285,14 @@ Result Par2Repairer::Process(
           {
             // Delete all of the partly reconstructed files
             DeleteIncompleteTargetFiles();
-            return eFileIOError;
+            return IsCancelled() ? eCancelled : eFileIOError;
+          }
+
+          if (IsCancelled())
+          {
+            // Delete all of the partly reconstructed files
+            DeleteIncompleteTargetFiles();
+            return eCancelled;
           }
 
           // Advance to the need offset within each block
@@ -293,7 +307,14 @@ Result Par2Repairer::Process(
         {
           // Delete all of the partly reconstructed files
           DeleteIncompleteTargetFiles();
-          return eFileIOError;
+          return IsCancelled() ? eCancelled : eFileIOError;
+        }
+
+        if (IsCancelled())
+        {
+          // Delete all of the partly reconstructed files
+          DeleteIncompleteTargetFiles();
+          return eCancelled;
         }
       }
 
@@ -543,6 +564,9 @@ bool Par2Repairer::LoadPacketsFromFile(std::string filename)
     // Continue as long as there is at least enough for the packet header
     while (offset + sizeof(PACKET_HEADER) <= filesize)
     {
+      if (IsCancelled())
+        break;
+
       progress.Update(offset);
 
       // Attempt to read the next packet header
@@ -996,6 +1020,9 @@ bool Par2Repairer::LoadPacketsFromExtraFiles(const std::vector<std::string> &ext
 {
   for (std::vector<std::string>::const_iterator i=extrafiles.begin(); i!=extrafiles.end(); i++)
   {
+    if (IsCancelled())
+      break;
+
     std::string filename = *i;
 
     // If the filename has a .par2 / .PAR2 / .Par2 extension
@@ -1378,6 +1405,9 @@ bool Par2Repairer::VerifySourceFiles(const std::string& basepath, std::vector<st
   #pragma omp parallel for schedule(dynamic) num_threads(filethreadcount)
   for (int i=0; i< static_cast<int>(sortedfiles.size()); ++i)
   {
+    if (IsCancelled())
+      continue;
+
     // Do we have a source file
     Par2RepairerSourceFile *sourcefile = sortedfiles[i];
 
@@ -1496,6 +1526,9 @@ bool Par2Repairer::VerifyExtraFiles(const std::vector<std::string> &extrafiles, 
     #pragma omp parallel for schedule(dynamic) num_threads(filethreadcount)
     for (int i=0; i< static_cast<int>(extrafiles.size()); ++i)
     {
+      if (IsCancelled())
+        continue;
+
       std::string filename = extrafiles[i];
 
       // If the filename does not have a .par2 / .PAR2 / .Par2 extension we are interested in it.
@@ -1764,12 +1797,21 @@ bool Par2Repairer::ScanDataFileAligned(DiskFile               *diskfile,   // [i
   buffer[1].resize((size_t)batchblocks * blocksize);
 
   bool readfailed = false;
+  bool stopped = false;
 
   // The blocks of a batch are next to each other, so they are read in one go.
   // Only the last block of a file can be short, and its entry covers it padded
   // out to the full block size with zeroes
   auto readbatch = [&](u32 firstblock, std::vector<char> &into)
   {
+    // Read here rather than in the loop below: a thread reaching it while the
+    // others are still hashing would leave them waiting at the barrier
+    if (IsCancelled())
+    {
+      stopped = true;
+      return;
+    }
+
     const u32 blocks = std::min(firstblock + batchblocks, blockcount) - firstblock;
     const u64 offset = (u64)firstblock * blocksize;
     const size_t span = (size_t)blocks * blocksize;
@@ -1789,7 +1831,7 @@ bool Par2Repairer::ScanDataFileAligned(DiskFile               *diskfile,   // [i
 
   #pragma omp parallel num_threads(workers)
   {
-    for (u32 firstblock=0; firstblock<blockcount && !readfailed; firstblock+=batchblocks)
+    for (u32 firstblock=0; firstblock<blockcount && !readfailed && !stopped; firstblock+=batchblocks)
     {
       const u32 lastblock = std::min(firstblock + batchblocks, blockcount);
       const u32 batch = firstblock / batchblocks;
@@ -2049,6 +2091,9 @@ bool Par2Repairer::ScanDataFile(DiskFile                *diskfile,    // [in]
   // Whilst we have not reached the end of the range
   while (filechecksummer.Offset() < rangeend)
   {
+    if (IsCancelled())
+      break;
+
     // Update progress indicator
     printprogress += filechecksummer.Offset() - oldoffset;
     if (printprogress >= blocksize || filechecksummer.ShortBlock())
@@ -2844,6 +2889,9 @@ bool Par2Repairer::ProcessData(u64 blockoffset, size_t blocklength, ProgressMete
     // For each input block
     while (inputblock != inputblocks.end())
     {
+      if (IsCancelled())
+        break;
+
       // Are we reading from a new file?
       if (lastopenfile != (*inputblock)->GetDiskFile())
       {
@@ -2907,6 +2955,9 @@ bool Par2Repairer::ProcessData(u64 blockoffset, size_t blocklength, ProgressMete
     // For each block that might need to be copied
     while (copyblock != copyblocks.end())
     {
+      if (IsCancelled())
+        break;
+
       // Does this block need to be copied
       if ((*copyblock)->IsSet())
       {
@@ -3003,6 +3054,9 @@ bool Par2Repairer::VerifyTargetFiles(const std::string &basepath)
   #pragma omp parallel for schedule(dynamic) num_threads(filethreadcount)
   for (int i=0; i< static_cast<int>(verifylist.size()); ++i)
   {
+    if (IsCancelled())
+      continue;
+
     Par2RepairerSourceFile *sourcefile = verifylist[i];
     DiskFile *targetfile = sourcefile->GetTargetFile();
 
