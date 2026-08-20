@@ -49,8 +49,27 @@ public:
   // Pass 0 to stop reporting. The observer must outlive this object.
   void SetObserver(Par2Observer *_observer) {observer = _observer;}
 
+  // List the files the loaded packets describe. Available once packets have
+  // been loaded and prepared.
+  bool GetFileInfo(std::vector<Par2FileInfo> *files) const;
+
+  // Accept the caller's word that these blocks of the named file are intact,
+  // so that they are not read and hashed again. The name is the one reported
+  // by GetFileInfo and blocks must have one entry per block of that file, a
+  // non-zero value meaning the block is present at its expected offset.
+  //
+  // The blocks are trusted without being verified. Supplying a block which is
+  // not intact will silently produce incorrect output.
+  void SetKnownBlocks(const std::string &filename, const std::vector<char> &blocks);
+
 protected:
   // Steps in verifying and repairing files:
+
+  // Use the blocks the caller has vouched for instead of scanning the file
+  bool TakeKnownBlocks(DiskFile               *diskfile,
+                       Par2RepairerSourceFile *sourcefile,
+                       std::vector<char>      &matched,
+                       u32                    &matchcount);
 
   // Load packets from a PAR2 file, the files named after it, and the extra files
   bool LoadPackets(const std::string &parfilename,
@@ -180,6 +199,9 @@ protected:
   const NoiseLevel noiselevel;              // OnScreen display
 
   Par2Observer *observer;                   // Notified of progress, or 0
+
+  // Blocks the caller has vouched for, keyed by the name the set records
+  std::map<std::string, std::vector<char> > knownblocks;
 
   std::string               searchpath;              // Where to find files on disk
 

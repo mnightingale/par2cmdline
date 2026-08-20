@@ -324,6 +324,94 @@ Result Par2Repairer::Process(
   return eSuccess;
 }
 
+// List the files the loaded packets describe
+bool Par2Repairer::GetFileInfo(std::vector<Par2FileInfo> *files) const
+{
+  if (0 == files)
+    return false;
+
+  files->clear();
+
+  if (0 == mainpacket)
+    return false;
+
+  for (std::vector<Par2RepairerSourceFile*>::const_iterator sf = sourcefiles.begin();
+       sf != sourcefiles.end();
+       ++sf)
+  {
+    const Par2RepairerSourceFile *sourcefile = *sf;
+    if (0 == sourcefile || 0 == sourcefile->GetDescriptionPacket())
+      continue;
+
+    const VerificationPacket *verificationpacket = sourcefile->GetVerificationPacket();
+
+    Par2FileInfo info;
+    info.filename = sourcefile->GetDescriptionPacket()->FileName();
+    info.filesize = sourcefile->GetDescriptionPacket()->FileSize();
+    info.blockcount = verificationpacket ? verificationpacket->BlockCount() : 0;
+
+    files->push_back(info);
+  }
+
+  return true;
+}
+
+// Accept the caller's word that these blocks are intact
+void Par2Repairer::SetKnownBlocks(const std::string &filename,
+                                  const std::vector<char> &blocks)
+{
+  if (blocks.empty())
+    knownblocks.erase(filename);
+  else
+    knownblocks[filename] = blocks;
+}
+
+// Use the blocks the caller has vouched for instead of scanning the file. The
+// same conditions as the aligned scan apply: without a verification packet, or
+// if the file is not exactly the right length, nothing can be said about where
+// the blocks are.
+bool Par2Repairer::TakeKnownBlocks(DiskFile               *diskfile,
+                                  Par2RepairerSourceFile *sourcefile,
+                                  std::vector<char>      &matched,
+                                  u32                    &matchcount)
+{
+  matchcount = 0;
+
+  if (knownblocks.empty() || 0 == sourcefile)
+    return false;
+
+  const DescriptionPacket *descriptionpacket = sourcefile->GetDescriptionPacket();
+  const VerificationPacket *verificationpacket = sourcefile->GetVerificationPacket();
+  if (0 == descriptionpacket || 0 == verificationpacket)
+    return false;
+
+  // A source file which has already been matched must not claim its blocks again
+  if (0 != sourcefile->GetCompleteFile())
+    return false;
+
+  if (diskfile->FileSize() != descriptionpacket->FileSize())
+    return false;
+
+  std::map<std::string, std::vector<char> >::const_iterator kb =
+    knownblocks.find(descriptionpacket->FileName());
+  if (kb == knownblocks.end())
+    return false;
+
+  const u32 blockcount = verificationpacket->BlockCount();
+  if (0 == blockcount || kb->second.size() != blockcount)
+    return false;
+
+  matched = kb->second;
+
+  for (u32 blocknumber=0; blocknumber<blockcount; ++blocknumber)
+  {
+    if (matched[blocknumber])
+      ++matchcount;
+  }
+
+  return true;
+}
+
 // How many blocks the verification packet says a source file should have,
 // or zero when there is no verification packet for it.
 static u32 BlocksNeeded(const Par2RepairerSourceFile *sourcefile)
@@ -1853,8 +1941,10 @@ bool Par2Repairer::ScanDataFile(DiskFile                *diskfile,    // [in]
 
   std::vector<char> alignedmatch;
   u32 alignedcount = 0;
-  const bool aligned = ScanDataFileAligned(diskfile, progress, sourcefile,
-                                           alignedmatch, alignedcount);
+  bool aligned = TakeKnownBlocks(diskfile, sourcefile, alignedmatch, alignedcount);
+  if (!aligned)
+    aligned = ScanDataFileAligned(diskfile, progress, sourcefile,
+                                  alignedmatch, alignedcount);
 
   // The parts of the file which still have to be searched a byte at a time
   std::vector<std::pair<u64, u64> > searchranges;
