@@ -20,6 +20,9 @@
 
 #include "libpar2internal.h"
 
+namespace Par2
+{
+
 #ifdef _MSC_VER
 #ifdef _DEBUG
 #undef THIS_FILE
@@ -1479,3 +1482,5 @@ bool Par1Repairer::RemoveParFiles(void)
 
   return true;
 }
+
+} // namespace Par2

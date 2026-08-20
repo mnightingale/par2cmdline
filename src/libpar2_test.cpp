@@ -26,6 +26,8 @@
 
 #include "libpar2.h"
 
+using namespace Par2;
+
 
 // ComputeRecoveryFileCount
 // check when it returns false.

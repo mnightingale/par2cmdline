@@ -24,6 +24,8 @@
 #include "libpar2internal.h"
 #include "letype.h"
 
+using namespace Par2;
+
 
 // test one value
 int test1() {

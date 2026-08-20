@@ -22,6 +22,9 @@
 
 #include <chrono>
 
+namespace Par2
+{
+
 template<typename TValue>
 class ProgressMeter
 {
@@ -121,5 +124,7 @@ public:
   }
 };
 
+
+} // namespace Par2
 
 #endif // __PROGRESSMETER_H__

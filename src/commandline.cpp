@@ -41,6 +41,9 @@ static char THIS_FILE[]=__FILE__;
 # include <omp.h>
 #endif
 
+namespace Par2
+{
+
 CommandLine::CommandLine(void)
 : filesize_cache()
 , version(verUnknown)
@@ -1544,3 +1547,5 @@ bool CommandLine::SetParFilename(std::string filename)
 
   return result;
 }
+
+} // namespace Par2

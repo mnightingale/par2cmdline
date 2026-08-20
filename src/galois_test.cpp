@@ -24,6 +24,8 @@
 #include "libpar2internal.h"
 #include "galois.h"
 
+using namespace Par2;
+
 
 // Galois are finite fields.  (A field with a finite number of elements.)
 // A field has:

@@ -25,6 +25,9 @@
 #include <string>
 #include <vector>
 
+namespace Par2
+{
+
 typedef uint8_t  u8;
 typedef int8_t   i8;
 typedef uint16_t u16;
@@ -145,5 +148,7 @@ bool ComputeRecoveryFileCount(std::ostream &sout,
 			      u32 recoveryblockcount,
 			      u64 largestfilesize,
 			      u64 blocksize);
+
+} // namespace Par2
 
 #endif // LIBPAR2_H

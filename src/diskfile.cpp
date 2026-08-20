@@ -43,6 +43,9 @@ static char THIS_FILE[]=__FILE__;
 #include <cwctype>
 #endif
 
+namespace Par2
+{
+
 #ifdef _WIN32
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1250,3 +1253,5 @@ u64 FileSizeCache::get(const std::string &filename) {
   //  }
   return filesize;
 }
+
+} // namespace Par2

@@ -24,6 +24,8 @@
 
 #include <string>
 
+namespace Par2
+{
 namespace utf8
 {
   extern const int MAX_ARGS;
@@ -54,6 +56,7 @@ namespace utf8
     char** m_argv;
     int m_argc;
   };
+}
 }
 
 #endif // _WIN32

@@ -28,6 +28,8 @@
 
 #include "md5.h"
 
+using namespace Par2;
+
 
 // compares Update(length) to Update(buffer,buffersize)
 int test1() {

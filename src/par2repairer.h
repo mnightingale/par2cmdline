@@ -21,6 +21,9 @@
 #ifndef __PAR2REPAIRER_H__
 #define __PAR2REPAIRER_H__
 
+namespace Par2
+{
+
 class Par2Repairer
 {
 public:
@@ -228,5 +231,7 @@ protected:
   void                     *inputbuffer;             // Buffer for reading DataBlocks (chunksize)
   void                     *outputbuffer;            // Buffer for writing DataBlocks (chunksize * missingblockcount)
 };
+
+} // namespace Par2
 
 #endif // __PAR2REPAIRER_H__
