@@ -103,6 +103,8 @@ struct Par2SetInfo
   std::string setid;            // The recovery set id, as printed by par2
   u64 blocksize;                // Size of each block
   u32 datablocks;               // Number of blocks in the recovery set
+  u32 recoveryblocks;           // Recovery blocks read so far, which each
+                                // AddPar2File may add to
   u32 recoverablefilecount;     // Files that can be repaired
   u32 otherfilecount;           // Files described but not recoverable
   u64 datasize;                 // Total size of the recoverable files

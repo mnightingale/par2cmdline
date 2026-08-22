@@ -45,6 +45,7 @@ namespace
   const size_t DATACOUNT = 3;
   const char *const PARFILE = "consumer.par2";
   const Par2::u64 BLOCKSIZE = 4096;
+  const Par2::u32 RECOVERYBLOCKS = 20;
 
   int failures = 0;
 
@@ -96,7 +97,7 @@ namespace
                                               0, 2,
                                               PARFILE, files,
                                               BLOCKSIZE, 0,
-                                              Par2::scVariable, 0, 20);
+                                              Par2::scVariable, 0, RECOVERYBLOCKS);
   }
 }
 
@@ -156,6 +157,8 @@ int main()
     Check(info.blocksize == BLOCKSIZE, "GetSetInfo blocksize");
     Check(info.recoverablefilecount == DATACOUNT, "GetSetInfo file count");
     Check(!info.setid.empty(), "GetSetInfo setid");
+    // Counted from the packets, so it reads before anything has been verified
+    Check(info.recoveryblocks == RECOVERYBLOCKS, "GetSetInfo recovery blocks");
 
     std::vector<Par2::Par2FileInfo> files;
     Check(verifier.GetFileInfo(&files), "GetFileInfo");
@@ -182,7 +185,8 @@ int main()
     Check(status.completefilecount == DATACOUNT, "all files complete");
     Check(status.missingblockcount == 0, "nothing missing");
     Check(status.availableblockcount == info.datablocks, "every block available");
-    Check(status.recoveryblockcount > 0, "recovery blocks counted");
+    Check(status.recoveryblockcount == info.recoveryblocks,
+          "the verify counts the same recovery blocks");
     Check(quiet.str().empty(), "nlSilent writes nothing");
     Check(observer.setinfo == 1, "OnSetInfo called");
     Check(observer.progress > 0, "OnProgress called at nlSilent");
