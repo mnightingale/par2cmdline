@@ -62,12 +62,7 @@ Memory (in MB) to use (default is half of total physical memory)
 .RB "Number of threads used for main processing (default auto-detected)"
 .TP
 .B \-T<n>
-.RB "Number of files hashed in parallel (default 2)."
-Threads which are not busy with another file also share out the blocks of a
-single file, so that one large file is not left to a single thread while the
-others have finished. No more threads are used in total than this option asks
-for. Each block is checked where it is expected to be, and only the parts of a
-file whose blocks are not there are searched a byte at a time afterwards
+.RB "Number of files hashed in parallel (default 2)"
 .TP
 .B \-\-
 Treat all following arguments as filenames
@@ -302,7 +297,11 @@ The first file in this list does not contain any recovery data, it only contains
 
 HASHING
 
-Hashing portion (file verification and creation stages) of the code can't be parallelized without processing multiple files simultaneously. The 2 file/thread default is a good choice for HDDs, using more threads can result in worse performance. Four or more threads can be used for better performance with SSDs.
+When creating, hashing can only be spread across threads by processing several files at the same time, so -T sets the limit on how much of that work runs in parallel.
+
+When verifying, the blocks of a single file are shared out as well. Each block is checked at the offset it is expected at, and threads which are not busy with another file take the blocks of one which is still going, so that a large file is not left to a single thread once the others have finished. Only the parts of a file whose blocks are not where they belong are searched a byte at a time afterwards. No more threads are used in total than -T asks for.
+
+The default of 2 is a good choice for HDDs, where reading several files at once can be slower than reading one. Four or more threads can be used for better performance with SSDs.
 
 .SH AUTHORS
 Peter Brian Clements <peterbclements@users.sourceforge.net>
