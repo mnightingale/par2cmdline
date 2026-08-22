@@ -1617,13 +1617,8 @@ bool Par2Repairer::ScanDataFileAligned(DiskFile               *diskfile,   // [i
 
   while (blocknumber < blockcount)
   {
-    u32 scanning = activeblockscans.load();
-    if (scanning < 1)
-      scanning = 1;
-
-    u32 threads = budget / scanning;
-    if (threads < 1)
-      threads = 1;
+    const u32 scanning = activeblockscans.load();
+    const u32 threads = budget / scanning;
 
     const int first = static_cast<int>(blocknumber);
     const int last  = static_cast<int>(std::min((u64)blockcount, (u64)blocknumber + threads * 4));
@@ -1637,6 +1632,7 @@ bool Par2Repairer::ScanDataFileAligned(DiskFile               *diskfile,   // [i
     #pragma omp parallel num_threads(threads)
 #endif
     {
+      // One buffer for each thread, rather than one for each block
       std::vector<char> buffer((size_t)blocksize);
 
       // Every block costs the same, so each thread takes a run of consecutive
