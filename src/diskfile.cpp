@@ -84,7 +84,9 @@ bool DiskFile::CreateParentDirectory(std::string _pathname)
       return true;
     }
 
-    std::wstring wpath = utf8::Utf8ToWide(path);
+    std::wstring wpath;
+    if (!utf8::Utf8ToWide(path, wpath))
+      return false;
 
     struct _stati64 st;
     if (_wstati64(wpath.c_str(), &st) == 0)
@@ -119,7 +121,14 @@ bool DiskFile::Create(std::string _filename, u64 _filesize)
     return false;
 
   // Create the file
-  std::wstring wfilename = utf8::Utf8ToWide(_filename);
+  std::wstring wfilename;
+  if (!utf8::Utf8ToWide(_filename, wfilename))
+  {
+    #pragma omp critical(stdio)
+    *serr << "Could not convert \"" << _filename << "\" to a wide string." << std::endl;
+    return false;
+  }
+
   hFile = ::CreateFileW(wfilename.c_str(), GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_NEW, 0, NULL);
   if (hFile == INVALID_HANDLE_VALUE)
   {
@@ -248,7 +257,14 @@ bool DiskFile::Open(const std::string &_filename, u64 _filesize)
   filename = _filename;
   filesize = _filesize;
 
-  std::wstring wfilename = utf8::Utf8ToWide(_filename);
+  std::wstring wfilename;
+  if (!utf8::Utf8ToWide(_filename, wfilename))
+  {
+    #pragma omp critical(stdio)
+    *serr << "Could not convert \"" << _filename << "\" to a wide string." << std::endl;
+    return false;
+  }
+
   hFile = ::CreateFileW(wfilename.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
   if (hFile == INVALID_HANDLE_VALUE)
   {
@@ -341,7 +357,11 @@ void DiskFile::Close(void)
 
 std::string DiskFile::GetCanonicalPathname(std::string filename)
 {
-  std::wstring wfilename = utf8::Utf8ToWide(filename);
+  std::wstring wfilename;
+  if (!utf8::Utf8ToWide(filename, wfilename))
+  {
+    return filename;
+  }
 
   // First call to get required buffer size
   DWORD length = GetFullPathNameW(wfilename.c_str(), 0, nullptr, nullptr);
@@ -363,7 +383,11 @@ std::string DiskFile::GetCanonicalPathname(std::string filename)
   wfullname[0] = towupper(wfullname[0]);
   std::replace(wfullname.get(), wfullname.get() + length, L'/', L'\\');
 
-  return utf8::WideToUtf8(wfullname.get());
+  std::string fullname;
+  if (!utf8::WideToUtf8(wfullname.get(), fullname))
+    return filename;
+
+  return fullname;
 }
 
 std::unique_ptr< std::list<std::string> > DiskFile::FindFiles(std::string path, std::string wildcard, bool recursive, bool followlinks)
@@ -376,7 +400,10 @@ std::unique_ptr< std::list<std::string> > DiskFile::FindFiles(std::string path, 
   }
   std::list<std::string> *matches = new std::list<std::string>;
 
-  std::wstring wwildcard = utf8::Utf8ToWide(path + wildcard);
+  std::wstring wwildcard;
+  if (!utf8::Utf8ToWide(path + wildcard, wwildcard))
+    return std::unique_ptr< std::list<std::string> >(matches);
+
   WIN32_FIND_DATAW fd;
   HANDLE h = ::FindFirstFileW(wwildcard.c_str(), &fd);
   if (h != INVALID_HANDLE_VALUE)
@@ -385,7 +412,9 @@ std::unique_ptr< std::list<std::string> > DiskFile::FindFiles(std::string path, 
     {
       if (0 == (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
       {
-        matches->push_back(path + utf8::WideToUtf8(fd.cFileName));
+        std::string name;
+        if (utf8::WideToUtf8(fd.cFileName, name))
+          matches->push_back(path + name);
       }
       else if (recursive == true)
       {
@@ -393,13 +422,18 @@ std::unique_ptr< std::list<std::string> > DiskFile::FindFiles(std::string path, 
           continue;
         }
 
+        std::string name;
+        if (!utf8::WideToUtf8(fd.cFileName, name))
+          continue;
+
         std::string nwwildcard="*";
-	std::unique_ptr< std::list<std::string> > dirmatches(
-						 DiskFile::FindFiles(path + utf8::WideToUtf8(fd.cFileName), nwwildcard, true, followlinks)
-						 );
+        std::unique_ptr< std::list<std::string> > dirmatches(
+          DiskFile::FindFiles(path + name, nwwildcard, true, followlinks)
+        );
 
         // append without requiring ordering
-        matches->splice(matches->end(), *dirmatches);
+        if (dirmatches)
+          matches->splice(matches->end(), *dirmatches);
       }
     } while (::FindNextFileW(h, &fd));
     ::FindClose(h);
@@ -410,7 +444,12 @@ std::unique_ptr< std::list<std::string> > DiskFile::FindFiles(std::string path, 
 
 u64 DiskFile::GetFileSize(std::string filename)
 {
-  std::wstring wfilename = utf8::Utf8ToWide(filename);
+  std::wstring wfilename;
+  if (!utf8::Utf8ToWide(filename, wfilename))
+  {
+    return 0;
+  }
+
   struct _stati64 st;
   if ((0 == _wstati64(wfilename.c_str(), &st)) && (0 != (st.st_mode & S_IFREG)))
   {
@@ -424,9 +463,14 @@ u64 DiskFile::GetFileSize(std::string filename)
 
 bool DiskFile::FileExists(std::string filename)
 {
-  std::wstring wfilename = utf8::Utf8ToWide(filename);
+  std::wstring wfilename;
+  if (!utf8::Utf8ToWide(filename, wfilename))
+  {
+    return false;
+  }
+
   struct _stati64 st;
-  return ((0 == _wstati64(wfilename.c_str(), &st)) && (0 != (st.st_mode & _S_IFREG))); 
+  return ((0 == _wstati64(wfilename.c_str(), &st)) && (0 != (st.st_mode & _S_IFREG)));
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -962,8 +1006,8 @@ bool DiskFile::Delete(void)
 #ifdef _WIN32
   assert(hFile == INVALID_HANDLE_VALUE);
 
-  std::wstring wfilename = utf8::Utf8ToWide(filename);
-  if (filename.size() > 0 && ::DeleteFileW(wfilename.c_str()))
+  std::wstring wfilename;
+  if (!filename.empty() && utf8::Utf8ToWide(filename, wfilename) && ::DeleteFileW(wfilename.c_str()))
   {
     exists = false;
     return true;
@@ -1045,7 +1089,8 @@ bool DiskFile::Rename(void)
       return false;
     }
 
-    wnewname = utf8::Utf8ToWide(newname);
+    if (!utf8::Utf8ToWide(newname, wnewname))
+      return false;
 
     // Check if file exists using wide-character stat
   } while (_wstati64(wnewname.c_str(), &st) == 0);
@@ -1080,8 +1125,6 @@ bool DiskFile::Rename(void)
 #ifdef _WIN32
 std::string DiskFile::ErrorMessage(DWORD error)
 {
-  std::string result;
-
   LPVOID lpMsgBuf;
   if (::FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
                        NULL,
@@ -1091,27 +1134,28 @@ std::string DiskFile::ErrorMessage(DWORD error)
                        0,
                        NULL))
   {
-    result = utf8::WideToUtf8((wchar_t*)lpMsgBuf);
+    std::string converted;
+    const bool ok = utf8::WideToUtf8((wchar_t*)lpMsgBuf, converted);
     LocalFree(lpMsgBuf);
-  }
-  else
-  {
-    char message[40];
-    snprintf(message, sizeof(message), "Unknown error code (%lu)", error);
-    result = message;
+
+    if (ok)
+    {
+      return converted;
+    }
   }
 
-  return result;
+  char message[40];
+  snprintf(message, sizeof(message), "Unknown error code (%lu)", error);
+
+  return message;
 }
 
 bool DiskFile::Rename(std::string _filename)
 {
   assert(hFile == INVALID_HANDLE_VALUE);
 
-  std::wstring wfilename = utf8::Utf8ToWide(filename);
-  std::wstring _wfilename = utf8::Utf8ToWide(_filename);
-
-  if (::MoveFileW(wfilename.c_str(), _wfilename.c_str()))
+  std::wstring wfilename, _wfilename;
+  if (utf8::Utf8ToWide(filename, wfilename) && utf8::Utf8ToWide(_filename, _wfilename) && ::MoveFileW(wfilename.c_str(), _wfilename.c_str()))
   {
     filename.swap(_filename);
 
