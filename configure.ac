@@ -96,5 +96,20 @@ case "$host_os" in
 esac
 AM_CONDITIONAL([MINGW], [test "x$MINGW_BUILD" = "xyes"])
 
+dnl Some platforms need libatomic before std::atomic will link
+AC_LANG_PUSH([C++])
+AC_MSG_CHECKING([whether std::atomic needs libatomic])
+AC_LINK_IFELSE([AC_LANG_PROGRAM([[#include <atomic>]],
+                                [[std::atomic<unsigned int> value(0); return (int)++value;]])],
+  [AC_MSG_RESULT([no])],
+  [par2_saved_LIBS="$LIBS"
+   LIBS="$LIBS -latomic"
+   AC_LINK_IFELSE([AC_LANG_PROGRAM([[#include <atomic>]],
+                                   [[std::atomic<unsigned int> value(0); return (int)++value;]])],
+     [AC_MSG_RESULT([yes])],
+     [LIBS="$par2_saved_LIBS"
+      AC_MSG_ERROR([std::atomic does not link, with or without libatomic])])])
+AC_LANG_POP([C++])
+
 AC_CONFIG_FILES([Makefile])
 AC_OUTPUT
