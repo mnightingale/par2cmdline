@@ -25,6 +25,7 @@
 
 #include <string>
 #include "utf8.h"
+#include "wargs.h"
 
 
 using namespace Par2::utf8;
@@ -261,15 +262,4 @@ int main()
   return 0;
 }
 
-#else // !_WIN32
-
-int main()
-{
-  std::cout << "utf8 conversion is only built on Windows." << std::endl;
-
-  // 77 is the exit status automake reports as SKIP, so this does not read as a
-  // test that ran and passed
-  return 77;
-}
-
-#endif
+#endif // _WIN32

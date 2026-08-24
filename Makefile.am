@@ -54,8 +54,11 @@ libpar2_a_SOURCES = src/crc.cpp src/crc.h \
 	src/reedsolomon.cpp src/reedsolomon.h \
 	src/verificationhashtable.cpp src/verificationhashtable.h \
 	src/verificationpacket.cpp src/verificationpacket.h \
-	src/libpar2.cpp src/libpar2internal.h \
-	src/utf8.cpp src/utf8.h
+	src/libpar2.cpp src/libpar2internal.h
+
+if MINGW
+libpar2_a_SOURCES += src/utf8.cpp src/utf8.h
+endif
 
 
 bin_PROGRAMS = par2
@@ -63,6 +66,10 @@ man_MANS = man/par2.1
 
 par2_SOURCES = src/par2cmdline.cpp \
 	src/commandline.cpp src/commandline.h
+
+if MINGW
+par2_SOURCES += src/wargs.cpp src/wargs.h
+endif
 par2_LDADD = libpar2.a
 
 LDADD = -lstdc++
@@ -206,7 +213,11 @@ EXTRA_DIST = \
 
 # Programs that need to be compiled for the test suite.
 # These are the unit tests.
-check_PROGRAMS = tests/letype_test tests/crc_test tests/md5_test tests/diskfile_test tests/libpar2_test tests/commandline_test tests/descriptionpacket_test tests/criticalpacket_test tests/reedsolomon_test tests/galois_test tests/utf8_test
+check_PROGRAMS = tests/letype_test tests/crc_test tests/md5_test tests/diskfile_test tests/libpar2_test tests/commandline_test tests/descriptionpacket_test tests/criticalpacket_test tests/reedsolomon_test tests/galois_test
+
+if MINGW
+check_PROGRAMS += tests/utf8_test
+endif
 
 tests_letype_test_SOURCES = src/letype_test.cpp src/letype.h
 
@@ -233,7 +244,7 @@ tests_reedsolomon_test_SOURCES = src/reedsolomon_test.cpp src/reedsolomon.cpp sr
 
 tests_galois_test_SOURCES = src/galois_test.cpp src/galois.cpp src/galois.h
 
-tests_utf8_test_SOURCES = src/utf8_test.cpp src/utf8.cpp src/utf8.h
+tests_utf8_test_SOURCES = src/utf8_test.cpp src/utf8.cpp src/utf8.h src/wargs.cpp src/wargs.h
 
 # List of all tests.
 # tests/test* are integration tests that use the binary.
@@ -287,7 +298,6 @@ TESTS = \
 	tests/test45 \
 	tests/test46 \
 	tests/test47 \
-	tests/utf8_test \
 	tests/consumer_build \
 	tests/unit_tests
 
