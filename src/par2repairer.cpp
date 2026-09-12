@@ -2704,7 +2704,6 @@ bool Par2Repairer::ComputeRSmatrix(void)
   return success;
 }
 
-// Allocate memory buffers for reading and writing data to disk.
 // The files being read take the buffers they read into from these, which
 // between them hold two batches for each file which may be read at once. A
 // batch is a whole number of blocks, at least one, and no more than
@@ -2728,6 +2727,7 @@ void Par2Repairer::ResetScanBuffers(void)
   scanbuffers.Reset(2 * filethreads, std::min(batchsize, maxbatchsize));
 }
 
+// Allocate memory buffers for reading and writing data to disk.
 bool Par2Repairer::AllocateBuffers(size_t memorylimit)
 {
   // Would single pass processing use too much memory
