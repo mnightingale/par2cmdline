@@ -20,6 +20,8 @@
 
 #include "libpar2internal.h"
 
+#include <functional>
+
 #ifdef _MSC_VER
 #ifdef _DEBUG
 #undef THIS_FILE
@@ -53,7 +55,8 @@ Par2Repairer::Par2Repairer(std::ostream &sout, std::ostream &serr, const NoiseLe
 , basepath()
 , totalthreads(default_threads())
 , filethreads(_FILE_THREADS)
-, blockthreads(1)
+, blockpool()
+, activereaders(0)
 , setid()
 , recoverypacketmap()
 , diskFileMap()
@@ -160,6 +163,9 @@ Result Par2Repairer::Process(
   // and never none whatever the caller asked for
   filethreads = std::max(1u, std::min(_filethreads, totalthreads));
 
+  // Every file being read shares these threads to check its blocks with
+  blockpool.reset(new TaskPool(totalthreads));
+
   // Determine the searchpath from the location of the main PAR2 file
   std::string name;
   DiskFile::SplitFilename(parfilename, searchpath, name);
@@ -205,6 +211,8 @@ Result Par2Repairer::Process(
   if (!ComputeWindowTable())
     return eLogicError;
 
+  ResetScanBuffers();
+
   // Attempt to verify all of the source files
   if (!VerifySourceFiles(basepath, extrafiles))
     return eFileIOError;
@@ -218,6 +226,10 @@ Result Par2Repairer::Process(
 
   // Find out how much data we have found
   UpdateVerificationResults();
+
+  // Nothing is scanned again until the repaired files are verified, so the
+  // buffers are given up rather than held against the memory a repair needs
+  scanbuffers.Reset(0, 0);
 
   if (noiselevel > nlSilent)
     sout << '\n';
@@ -294,6 +306,8 @@ Result Par2Repairer::Process(
           sout << "\nVerifying repaired files:\n" << std::endl;
 
         // Verify that all of the reconstructed target files are now correct
+        ResetScanBuffers();
+
         if (!VerifyTargetFiles(basepath))
         {
           // Delete all of the partly reconstructed files
@@ -1208,7 +1222,7 @@ bool Par2Repairer::VerifySourceFiles(const std::string& basepath, std::vector<st
   ProgressMeter<u64> progress(sout, "Scanning: ", mttotalsize);
 
   // Start verifying the files
-  foreach_parallel(sortedfiles, SetBlockThreads(sortedfiles.size()), [&](Par2RepairerSourceFile *sourcefile)
+  foreach_parallel(sortedfiles, FileThreads(sortedfiles.size()), [&](Par2RepairerSourceFile *sourcefile)
   {
     // What filename does the file use
     const std::string& file = sourcefile->TargetFileName();
@@ -1314,7 +1328,7 @@ bool Par2Repairer::VerifyExtraFiles(const std::vector<std::string> &extrafiles, 
 
     ProgressMeter<u64> progress(sout, "Scanning: ", mttotalextrasize);
 
-    foreach_parallel(extrafiles, SetBlockThreads(extrafiles.size()), [&](const std::string &extrafile)
+    foreach_parallel(extrafiles, FileThreads(extrafiles.size()), [&](const std::string &extrafile)
     {
       std::string filename = extrafile;
 
@@ -1567,61 +1581,66 @@ bool Par2Repairer::ScanDataFileAligned(DiskFile               *diskfile,   // [i
   if (0 == blockcount)
     return false;
 
-  const u32 workers = blockthreads;
-
   // A single thread gains nothing from checking the blocks up front, and a
   // damaged file would then be read a second time by the scan below
-  if (workers < 2)
+  if (!blockpool || blockpool->ThreadCount() < 2 || scanbuffers.Count() < 2)
     return false;
 
   matched.assign(blockcount, 0);
 
-  // One block for each thread is read at a time, into one of two buffers, so
-  // that the next batch can be read while the current one is being checked
-  const u32 batchblocks = workers;
-
-  std::vector<char> buffer[2];
-  buffer[0].resize((size_t)batchblocks * blocksize);
-  buffer[1].resize((size_t)batchblocks * blocksize);
-
-  std::atomic<bool> readfailed(false);
+  // The files being scanned at once share the pool's threads and the buffers
+  // they read into, so a file left scanning on its own reads as far ahead as
+  // the whole pool can keep up with
+  struct ActiveReader
+  {
+    explicit ActiveReader(std::atomic<u32> &count) : count(count) {++count;}
+    ~ActiveReader(void) {--count;}
+    std::atomic<u32> &count;
+  } active(activereaders);
 
   FileHasher filehasher(fullhash);
+
+  const size_t slots = scanbuffers.Count();
+  const u32    batchblocks = (u32)(scanbuffers.Size() / blocksize);
+
+  // What each batch which has been given to the pool is checking
+  std::unique_ptr<TaskPool::Batch[]> batches(new TaskPool::Batch[slots]);
+  std::vector<size_t>                held(slots, 0);   // the buffer it read into
+  std::vector<char*>                 at(slots, 0);
+  std::vector<u32>                   firstblock(slots, 0);
 
   // The blocks of a batch are next to each other, so they are read in one go.
   // Only the last block of a file can be short, and its entry covers it padded
   // out to the full block size with zeroes
-  auto readbatch = [&](u32 firstblock, std::vector<char> &into)
+  auto readbatch = [&](char *into, const u32 first, const u32 blocks)
   {
-    const u32 blocks = std::min(firstblock + batchblocks, blockcount) - firstblock;
-    const u64 offset = static_cast<u64>(firstblock) * blocksize;
+    const u64 offset = static_cast<u64>(first) * blocksize;
     const size_t span = static_cast<size_t>(blocks) * blocksize;
-    const size_t length = std::min(static_cast<u64>(span), filesize - offset);
+    const size_t length = (size_t)std::min(static_cast<u64>(span), filesize - offset);
 
-    if (!diskfile->Read(offset, &into[0], length))
-    {
-      readfailed = true;
-      return;
-    }
+    if (!diskfile->Read(offset, into, length))
+      return false;
 
-    filehasher.Update(offset, &into[0], length);
+    filehasher.Update(offset, into, length);
 
     if (length < span)
       memset(&into[length], 0, span - length);
+
+    return true;
   };
 
-  auto checkblock = [&](const u32 block, const std::vector<char> &checking, u32 firstblock)
+  auto checkblock = [&](const char *from, const u32 first, const u32 block)
   {
     const u64 length = std::min(blocksize, filesize - static_cast<u64>(block) * blocksize);
-    const char *at = &checking[static_cast<size_t>(block - firstblock) * blocksize];
+    const char *data = &from[static_cast<size_t>(block - first) * blocksize];
     const FILEVERIFICATIONENTRY *entry = verificationpacket->VerificationEntry(block);
 
-    const u32 checksum = ~0 ^ CRCUpdateBlock(~0, blocksize, at);
+    const u32 checksum = ~0 ^ CRCUpdateBlock(~0, blocksize, data);
     if (checksum != entry->crc)
       return;
 
     MD5Context context;
-    context.Update(at, blocksize);
+    context.Update(data, blocksize);
 
     MD5Hash hash{};
     context.Final(hash);
@@ -1635,87 +1654,110 @@ bool Par2Repairer::ScanDataFileAligned(DiskFile               *diskfile,   // [i
       progress.Add(length);
   };
 
-  // Checkers take the blocks of a batch claimblocks at a time. One block each
-  // is what the batch holds today; a hasher that takes several blocks at once
-  // would ask for more.
-  const u32 claimblocks = 1;
-  const u32 batchcount = (blockcount + batchblocks - 1) / batchblocks;
+  // The pool takes the blocks of a batch one at a time, alongside the blocks
+  // of every other file being scanned
+  std::vector<std::function<void(size_t)> > check(slots);
+  for (size_t slot = 0; slot < slots; ++slot)
+    check[slot] = [&, slot](const size_t block) {checkblock(at[slot], firstblock[slot], (u32)block);};
 
-  std::mutex mutex;
-  std::condition_variable batchfilled;   // the reader has filled a buffer
-  std::condition_variable batchchecked;  // the checkers have emptied one
-  u32 filledbatches = 0;                 // batches the reader has completed
-  u32 outstanding[2] = { 0, 0 };         // blocks left to check in each buffer
-  std::atomic<u32> nextblock(0);      // the next block a checker may claim
+  size_t next = 0;         // the slot the next batch is given
+  size_t oldest = 0;       // the slot of the batch which has been out longest
+  size_t outstanding = 0;
 
-  // Reads each batch into the buffer the checkers are not using, so that the
-  // next batch arrives while the current one is being hashed
-  std::thread reader([&] {
-    for (u32 batch = 0; batch < batchcount; ++batch)
-    {
-      const u32 firstblock = batch * batchblocks;
-      const u32 blocks = std::min(firstblock + batchblocks, blockcount) - firstblock;
-
-      {
-        std::unique_lock<std::mutex> lock(mutex);
-        batchchecked.wait(lock, [&]{ return outstanding[batch % 2] == 0; });
-      }
-
-      readbatch(firstblock, buffer[batch % 2]);
-
-      {
-        std::lock_guard<std::mutex> lock(mutex);
-        outstanding[batch % 2] = blocks;
-        filledbatches = batch + 1;
-      }
-      batchfilled.notify_all();
-
-      if (readfailed)
-        return;
-    }
-  });
-
-  std::vector<std::thread> checkers;
-  checkers.reserve(workers);
-  for (u32 worker = 0; worker < workers; ++worker)
+  // Waits for the batch which has been with the pool longest, helping to check
+  // it, and gives back the buffer it was reading from
+  const std::function<void(void)> retire = [&]()
   {
-    checkers.emplace_back([&]()
+    blockpool->Wait(batches[oldest]);
+    scanbuffers.Give(held[oldest]);
+
+    oldest = (oldest + 1) % slots;
+    --outstanding;
+  };
+
+  // The pool has to be finished with every batch before the buffers and the
+  // state the batches point at go away, whichever way the scan is left. This
+  // is declared last so that it runs before any of them.
+  struct Drain
+  {
+    const std::function<void(void)> *retire;
+    const size_t                    *outstanding;
+
+    ~Drain(void)
     {
-      for (;;)
+      while (*outstanding > 0)
       {
-        const u32 firstclaimed = nextblock.fetch_add(claimblocks);
-        if (firstclaimed >= blockcount)
-          return;
-
-        // A claim never spans two batches, because each batch sits in its own buffer
-        const u32 batch = firstclaimed / batchblocks;
-        const u32 lastclaimed = std::min(firstclaimed + claimblocks,
-                                         std::min((batch + 1) * batchblocks, blockcount));
-
+        try
         {
-          std::unique_lock<std::mutex> lock(mutex);
-          batchfilled.wait(lock, [&]{ return filledbatches > batch || readfailed; });
+          (*retire)();
         }
-
-        if (readfailed)
-          return;
-
-        for (u32 block = firstclaimed; block < lastclaimed; ++block)
-          checkblock(block, buffer[batch % 2], batch * batchblocks);
-
+        catch (...)
         {
-          std::lock_guard<std::mutex> lock(mutex);
-          outstanding[batch % 2] -= lastclaimed - firstclaimed;
-          if (outstanding[batch % 2] == 0)
-            batchchecked.notify_one();
+          // A batch which failed still has to be waited for, and the buffer
+          // it was reading into still has to be given back
         }
       }
-    });
+    }
+  } drain{&retire, &outstanding};
+
+  bool readfailed = false;
+  u32  nextblock = 0;
+
+  while (nextblock < blockcount)
+  {
+    // A file keeps to its share of the buffers while others are being read,
+    // and takes back the oldest of its own rather than waiting on them
+    const size_t share = std::max<size_t>(2, slots / std::max(1u, activereaders.load()));
+
+    size_t buffer = 0;
+
+    for (;;)
+    {
+      // Over its share, this file takes back one of its own before it may
+      // read any further ahead
+      if (outstanding >= share)
+      {
+        retire();
+        continue;
+      }
+
+      if (scanbuffers.TryTake(buffer))
+        break;
+
+      // Every buffer is with another file. Waiting for this file's own oldest
+      // batch keeps it from waiting on the files it is sharing them with,
+      // which it has to do only when it has no batch of its own to take back
+      if (0 == outstanding)
+      {
+        buffer = scanbuffers.Take();
+        break;
+      }
+
+      retire();
+    }
+
+    const u32 blocks = std::min(batchblocks, blockcount - nextblock);
+
+    held[next] = buffer;
+    at[next] = scanbuffers.At(buffer);
+    firstblock[next] = nextblock;
+
+    if (!readbatch(at[next], nextblock, blocks))
+    {
+      scanbuffers.Give(buffer);
+      readfailed = true;
+      break;
+    }
+
+    blockpool->Submit(batches[next], nextblock, nextblock + blocks, check[next]);
+
+    next = (next + 1) % slots;
+    ++outstanding;
+    nextblock += blocks;
   }
 
-  reader.join();
-  for (auto & checker : checkers)
-    checker.join();
+  while (outstanding > 0)
+    retire();
 
   if (readfailed)
     return false;
@@ -2663,6 +2705,29 @@ bool Par2Repairer::ComputeRSmatrix(void)
 }
 
 // Allocate memory buffers for reading and writing data to disk.
+// The files being read take the buffers they read into from these, which
+// between them hold two batches for each file which may be read at once. A
+// batch is a whole number of blocks, at least one, and no more than
+// MAX_CHUNK_SIZE unless a single block is already larger than that.
+void Par2Repairer::ResetScanBuffers(void)
+{
+  // The blocks of a file are only checked where they are expected to be when
+  // there are verification packets to check them against and more than one
+  // thread to do it with, so otherwise nothing would ever be read into them
+  if (!blockverifiable || !blockpool || blockpool->ThreadCount() < 2)
+  {
+    scanbuffers.Reset(0, 0);
+    return;
+  }
+
+  const size_t batchsize = (size_t)std::max(1u, totalthreads / filethreads) * (size_t)blocksize;
+  const size_t maxbatchsize = MAX_CHUNK_SIZE != 0
+    ? std::max((size_t)blocksize, (size_t)MAX_CHUNK_SIZE)
+    : batchsize;
+
+  scanbuffers.Reset(2 * filethreads, std::min(batchsize, maxbatchsize));
+}
+
 bool Par2Repairer::AllocateBuffers(size_t memorylimit)
 {
   // Would single pass processing use too much memory
@@ -2869,7 +2934,7 @@ bool Par2Repairer::VerifyTargetFiles(const std::string &basepath)
   ProgressMeter<u64> progress(sout, "Scanning: ", mttotalsize);
 
   // Iterate through each file in the verification list
-  foreach_parallel(verifylist, SetBlockThreads(verifylist.size()), [&](Par2RepairerSourceFile *sourcefile)
+  foreach_parallel(verifylist, FileThreads(verifylist.size()), [&](Par2RepairerSourceFile *sourcefile)
   {
     DiskFile *targetfile = sourcefile->GetTargetFile();
 
